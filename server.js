@@ -1302,7 +1302,11 @@ app.post("/updateProfileImage", verifyToken, async (req, res) => {
     const userSnapshot = await db.collection("users")
       .where("email", "==", userId)
       .get();
+<<<<<<< HEAD
     
+=======
+
+>>>>>>> fd95e62 (WIP: Save changes before rebase)
     if (userSnapshot.empty) {
       return res.status(404).json({ error: "User not found" });
     }
@@ -1447,4 +1451,8 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📱 WebSocket running on ws://localhost:${PORT}/ws`);
+<<<<<<< HEAD
 });
+=======
+});
+>>>>>>> fd95e62 (WIP: Save changes before rebase)

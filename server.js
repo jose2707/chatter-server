@@ -11,32 +11,20 @@ const axios = require("axios");
 const admin = require("firebase-admin");
 const { initializeApp, cert } = require("firebase-admin/app");
 const { getFirestore, FieldValue, FieldPath } = require("firebase-admin/firestore");
-const https = require("https");
-const fs = require("fs");
+const http = require("http");  // Changed from https to http
 const onlineUsers = {};
 
-// Generate SSL certificates if missing (for development)
-try {
-  if (!fs.existsSync('key.pem') || !fs.existsSync('cert.pem')) {
-    const { execSync } = require('child_process');
-    execSync('openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=localhost"');
-    console.log("✅ Generated self-signed SSL certificates");
-  }
-} catch (e) {
-  console.error("❌ SSL certificate generation failed:", e.message);
-}
-
-// 🔥 FIXED: Proper Firebase initialization with error handling
+// 🔥 Firebase initialization with error handling
 try {
   const serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_KEY);
   initializeApp({
-  credential: cert(serviceAccount),
-  databaseURL: process.env.FIREBASE_DATABASE_URL,
-});
+    credential: cert(serviceAccount),
+    databaseURL: process.env.FIREBASE_DATABASE_URL,
+  });
   console.log("✅ Firebase initialized successfully");
 } catch (error) {
   console.error("❌ Firebase initialization failed:", error);
-  process.exit(1);
+  if (process.env.NODE_ENV !== 'production') process.exit(1);
 }
 
 const db = getFirestore();
@@ -49,14 +37,11 @@ app.use(express.static("public"));
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
   console.error("❌ JWT_SECRET is not set in .env");
-  process.exit(1);
+  if (process.env.NODE_ENV !== 'production') process.exit(1);
 }
 
-// 🔌 HTTPS Server Setup
-const server = https.createServer({
-  key: fs.readFileSync('key.pem'),
-  cert: fs.readFileSync('cert.pem')
-}, app);
+// 🔌 HTTP Server Setup (Render provides HTTPS termination)
+const server = http.createServer(app);  // Changed to HTTP
 
 // 🔌 WebSocket Setup
 const wss = new WebSocket.Server({
@@ -64,31 +49,7 @@ const wss = new WebSocket.Server({
   path: '/ws',
   clientTracking: true
 });
-const io = require('socket.io')(server, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
-  }
-});
-io.on("connection", (socket) => {
-  console.log(`🔌 New connection: ${socket.id}`);
 
-  socket.on("authenticate", (token) => {
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      socket.user = decoded;
-      onlineUsers[decoded.email] = socket.id;
-
-      console.log(`✅ Authenticated: ${decoded.email}`);
-      socket.emit("authenticated", { email: decoded.email });
-
-    } catch (error) {
-      console.log("❌ Authentication failed:", error.message);
-      socket.emit("authentication_error", { message: "Invalid token" });
-    }
-  });
-
-//const onlineUsers = new Map();
 const callRooms = new Map();
 const typingIndicators = new Map();
 
@@ -225,7 +186,6 @@ async function handleWebRTCMessage(ws, payload) {
 }
 
 // Helper Functions
-
 async function forwardSignal({ type, roomId, signal, sender, targetUser }) {
   const targetClient = onlineUsers.get(targetUser);
 
@@ -249,7 +209,7 @@ async function forwardICECandidate({ candidate, sender, targetUser }) {
 
   if (!targetClient || targetClient.readyState !== WebSocket.OPEN) {
     console.error(`❌ Target ${targetUser} not available for ICE candidate`);
-    return; // ICE candidates are optional, don't throw error
+    return;
   }
 
   targetClient.send(JSON.stringify({
@@ -404,7 +364,7 @@ async function handleReaction(ws, payload) {
       if (
         client.readyState === WebSocket.OPEN &&
         client.user &&
-        members.includes(client.user.email) // ✅ THIS LINE was missing a closing parenthesis!
+        members.includes(client.user.email)
       ) {
         client.send(JSON.stringify(broadcast));
       }
@@ -414,7 +374,7 @@ async function handleReaction(ws, payload) {
         if (
           client.readyState === WebSocket.OPEN &&
           client.user &&
-          [senderEmail, receiverEmail].includes(client.user.email) // ✅ Also check this line
+          [senderEmail, receiverEmail].includes(client.user.email)
         ) {
           client.send(JSON.stringify(broadcast));
         }
@@ -574,7 +534,7 @@ async function handleNewMessage(ws, payload) {
     });
   }
 }
-// Add this before wss.on('connection')
+
 wss.on('headers', (headers, req) => {
   headers.push('Access-Control-Allow-Origin: *');
   headers.push('Access-Control-Allow-Credentials: true');
@@ -584,7 +544,7 @@ wss.on("connection", (ws, req) => {
   console.log(`🔌 New connection attempt from ${req.socket.remoteAddress}`);
   ws.on('close', () => console.log(`🔌 Disconnected: ${ws.user?.email}`));
 
-  const url = new URL(req.url, `https://${req.headers.host}`);
+  const url = new URL(req.url, `http://${req.headers.host}`);
   const token = url.searchParams.get("token");
 
   if (!token) {
@@ -614,121 +574,6 @@ wss.on("connection", (ws, req) => {
     console.log("❌ Invalid WebSocket token:", error.message);
     return ws.close();
   }
-  socket.on('startPrivateCall', async ({ callerEmail, receiverEmail }) => {
-     const callRef = db.collection('calls').doc();
-     await callRef.set({
-       caller: callerEmail,
-       receiver: receiverEmail,
-       status: 'ringing',
-       startedAt: FieldValue.serverTimestamp(),
-       chatId: getChatId(callerEmail, receiverEmail)
-     });
-
-     // Notify receiver
-     if (onlineUsers[receiverEmail]) {
-       io.to(onlineUsers[receiverEmail]).emit('incomingCall', {
-         callId: callRef.id,
-         callerEmail,
-       });
-     }
-   });
-
-   socket.on('answerCall', async ({ callId }) => {
-     const callRef = db.collection('calls').doc(callId);
-     await callRef.update({
-       status: 'answered', // Was 'accepted'
-       answeredAt: FieldValue.serverTimestamp()
-     });
-   });
-
-   socket.on('rejectCall', async ({ callId }) => {
-     const callRef = db.collection('calls').doc(callId);
-     await callRef.update({
-       status: 'rejected',
-       endedAt: FieldValue.serverTimestamp()
-     });
-   });
-socket.on('endCall', async ({ callId }) => {
-    const callRef = db.collection('calls').doc(callId);
-    await callRef.update({
-      status: 'ended',
-      endedAt: FieldValue.serverTimestamp()
-    });
-  });
-
-  socket.on('cancelCall', async ({ callId }) => {
-    const callRef = db.collection('calls').doc(callId);
-    await callRef.update({
-      status: 'cancelled',
-      endedAt: FieldValue.serverTimestamp()
-    });
-  });
-
-
-socket.on('userConnected', (email) => {
-  onlineUsers[email] = socket.id;
-});
-
-socket.on('disconnect', () => {
-    if (socket.user?.email) {
-      delete onlineUsers[socket.user.email];
-      console.log(`🔌 Disconnected: ${socket.user.email}`);
-    }
-  });
-  });
-// Group Call - Start a new group call
-socket.on('startGroupCall', async ({ callerEmail, groupId, participantEmails }) => {
-  const callRef = firestore.collection('group_calls').doc();
-
-  await callRef.set({
-    caller: callerEmail,
-    groupId,
-    participants: participantEmails,
-    status: 'ringing',
-    startedAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
-
-  // Notify online participants
-  participantEmails.forEach((email) => {
-    const socketId = onlineUsers[email];
-    if (socketId && email !== callerEmail) {
-      io.to(socketId).emit('incomingGroupCall', {
-        callId: callRef.id,
-        groupId,
-        callerEmail,
-      });
-    }
-  });
-});
-
-// Group Call - Join an existing group call
-socket.on('joinGroupCall', async ({ callId, userEmail }) => {
-  const callRef = firestore.collection('group_calls').doc(callId);
-  await callRef.update({
-    [`joined.${userEmail}`]: true,
-  });
-});
-
-// Group Call - Leave the group call
-socket.on('leaveGroupCall', async ({ callId, userEmail }) => {
-  const callRef = firestore.collection('group_calls').doc(callId);
-  await callRef.update({
-    [`joined.${userEmail}`]: false,
-  });
-});
-
-// Group Call - End the group call for all
-socket.on('endGroupCall', async ({ callId }) => {
-  const callRef = firestore.collection('group_calls').doc(callId);
-  await callRef.update({ status: 'ended' });
-});
-
-// Group Call - Cancel the call before answer
-socket.on('cancelGroupCall', async ({ callId }) => {
-  const callRef = firestore.collection('group_calls').doc(callId);
-  await callRef.update({ status: 'cancelled' });
-});
-
 
   ws.on("message", async (data) => {
     try {
@@ -814,7 +659,6 @@ setInterval(() => {
   });
 
   // Cleanup expired typing indicators (10s threshold)
-  const typingIndicators = new Map();
   const now = Date.now();
   typingIndicators.forEach((timestamp, email) => {
     if (timestamp && now - timestamp > 10000) {
@@ -843,6 +687,11 @@ const messageLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 10,
   message: { success: false, message: "❌ Too many messages sent, slow down!" },
+});
+
+// Health check endpoint for Render
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'healthy' });
 });
 
 // 🔥 Firebase Authentication Routes
@@ -910,7 +759,7 @@ app.post("/register", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "❌ Server error!",
-      errorDetails: error.message // Added for debugging
+      errorDetails: error.message
     });
   }
 });
@@ -1194,20 +1043,20 @@ app.post("/create-group", verifyToken, async (req, res) => {
       });
     }
 
-    const allMembers = [...new Set([...members, creatorEmail])]; // Remove duplicates
+    const allMembers = [...new Set([...members, creatorEmail])];
     const groupData = {
       name: groupName,
       members: allMembers,
       createdBy: creatorEmail,
-      admin: creatorEmail, // Set creator as admin
+      admin: creatorEmail,
       createdAt: FieldValue.serverTimestamp(),
       activeMembers: [creatorEmail],
-      pinned: true // Automatically pin for all members
+      pinned: true
     };
 
     await db.collection('groups').doc(groupName).set(groupData);
 
-    // Add to recent chats for all members (automatically pinned)
+    // Add to recent chats for all members
     const batch = db.batch();
     const recentData = {
       email: groupName,
@@ -1216,7 +1065,7 @@ app.post("/create-group", verifyToken, async (req, res) => {
       seen: false,
       isGroup: true,
       members: allMembers,
-      pinned: true, // This will pin the group for all members
+      pinned: true,
       pinnedAt: FieldValue.serverTimestamp()
     };
 
@@ -1315,7 +1164,7 @@ app.post("/add-group-members", verifyToken, async (req, res) => {
       seen: false,
       isGroup: true,
       members: [...groupData.members, ...uniqueNewMembers],
-      pinned: true, // Automatically pin for new members
+      pinned: true,
       pinnedAt: FieldValue.serverTimestamp()
     };
 
@@ -1414,14 +1263,14 @@ app.post("/remove-group-member", verifyToken, async (req, res) => {
       .doc(memberEmail)
       .collection('chats')
       .doc(groupId)
-      .delete
+      .delete();
 
     // Add system message
     await db.collection('groups')
       .doc(groupId)
       .collection('messages')
       .add({
-        text: `${userEmail} left the group`,
+        text: `${userEmail} removed ${memberEmail} from the group`,
         sender: 'System',
         timestamp: FieldValue.serverTimestamp(),
         isSystem: true
@@ -1429,27 +1278,38 @@ app.post("/remove-group-member", verifyToken, async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: "Left group successfully"
+      message: "Member removed successfully"
     });
   } catch (error) {
-    console.error("❌ Leave group error:", error);
+    console.error("❌ Remove group member error:", error);
     res.status(500).json({
       success: false,
-      message: "Failed to leave group"
+      message: "Failed to remove member"
     });
   }
 });
-// Assuming Firebase Admin SDK is initialized as `admin`
-app.post("/updateProfileImage", async (req, res) => {
-  const { uid, imageUrl } = req.body;
 
-  if (!uid || !imageUrl) {
-    return res.status(400).json({ error: "Missing uid or imageUrl" });
+app.post("/updateProfileImage", verifyToken, async (req, res) => {
+  const { imageUrl } = req.body;
+  const userId = req.user.email;
+
+  if (!imageUrl) {
+    return res.status(400).json({ error: "Missing imageUrl" });
   }
 
   try {
-    await admin.firestore().collection("users").doc(uid).update({
-      profileImage: imageUrl,
+    // Find user document by email
+    const userSnapshot = await db.collection("users")
+      .where("email", "==", userId)
+      .get();
+    
+    if (userSnapshot.empty) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const userDoc = userSnapshot.docs[0];
+    await userDoc.ref.update({
+      profilePic: imageUrl,
     });
 
     return res.status(200).json({ message: "Profile image updated" });
@@ -1461,7 +1321,7 @@ app.post("/updateProfileImage", async (req, res) => {
 
 app.post("/toggle-pin-chat", verifyToken, async (req, res) => {
   try {
-    const { chatId, isGroup } = req.body;
+    const { chatId } = req.body;
     const userEmail = req.user.email;
 
     if (!chatId) {
@@ -1584,8 +1444,7 @@ app.get("/group-info/:groupId", verifyToken, async (req, res) => {
 // 🚀 Start Server
 const PORT = process.env.PORT || 3000;
 
-// Start the HTTPS server (which includes WebSocket)
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server running on https://0.0.0.0:${PORT}`);
-  console.log(`📱 WebSocket running on wss://0.0.0.0:${PORT}/ws`);
+server.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📱 WebSocket running on ws://localhost:${PORT}/ws`);
 });

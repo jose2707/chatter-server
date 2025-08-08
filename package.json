@@ -20,12 +20,16 @@
   },
   "homepage": "https://github.com/jose2707/chatter-server#readme",
   "dependencies": {
+    "axios": "^1.6.7",
     "bcryptjs": "^3.0.2",
+    "body-parser": "^1.20.2",
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
     "express-rate-limit": "^8.0.1",
     "firebase-admin": "^13.4.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
     "validator": "^13.15.15",
     "ws": "^8.18.3"
   }

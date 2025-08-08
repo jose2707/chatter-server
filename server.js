@@ -1451,8 +1451,4 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📱 WebSocket running on ws://localhost:${PORT}/ws`);
-<<<<<<< HEAD
 });
-=======
-});
->>>>>>> fd95e62 (WIP: Save changes before rebase)

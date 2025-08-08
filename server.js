@@ -1302,11 +1302,7 @@ app.post("/updateProfileImage", verifyToken, async (req, res) => {
     const userSnapshot = await db.collection("users")
       .where("email", "==", userId)
       .get();
-<<<<<<< HEAD
-    
-=======
 
->>>>>>> fd95e62 (WIP: Save changes before rebase)
     if (userSnapshot.empty) {
       return res.status(404).json({ error: "User not found" });
     }

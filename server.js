@@ -28,11 +28,11 @@ try {
 
 // 🔥 FIXED: Proper Firebase initialization with error handling
 try {
-  const serviceAccount = require("./serviceAccountKey.json");
+  const serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_KEY);
   initializeApp({
-    credential: cert(serviceAccount),
-    databaseURL: process.env.FIREBASE_DATABASE_URL
-  });
+  credential: cert(serviceAccount),
+  databaseURL: process.env.FIREBASE_DATABASE_URL,
+});
   console.log("✅ Firebase initialized successfully");
 } catch (error) {
   console.error("❌ Firebase initialization failed:", error);

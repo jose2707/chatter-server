@@ -13,6 +13,8 @@ const { initializeApp, cert } = require("firebase-admin/app");
 const { getFirestore, FieldValue, FieldPath } = require("firebase-admin/firestore");
 const http = require("http");  // Changed from https to http
 const onlineUsers = new Map();
+const realtimeDb = admin.database();
+const firestore = admin.firestore();
 
 // 🔥 Firebase initialization with error handling
 try {
@@ -60,6 +62,42 @@ function heartbeat() {
 
 function getChatId(email1, email2) {
   return [email1, email2].sort().join("_");
+}
+
+async function setUserPresence(userEmail) {
+  const userStatusDatabaseRef = realtimeDb.ref('/status/' + userEmail);
+  const userStatusFirestoreRef = firestore.collection('online_status').doc(userEmail);
+
+  const isOfflineForDatabase = {
+    state: 'offline',
+    last_changed: admin.database.ServerValue.TIMESTAMP,
+  };
+  const isOnlineForDatabase = {
+    state: 'online',
+    last_changed: admin.database.ServerValue.TIMESTAMP,
+  };
+
+  const isOfflineForFirestore = {
+    isOnline: false,
+    lastSeen: admin.firestore.FieldValue.serverTimestamp(),
+  };
+  const isOnlineForFirestore = {
+    isOnline: true,
+    lastSeen: null,
+  };
+
+  const connectedRef = realtimeDb.ref('.info/connected');
+  connectedRef.on('value', async (snapshot) => {
+    if (snapshot.val() === false) {
+      await userStatusFirestoreRef.set(isOfflineForFirestore, { merge: true });
+      return;
+    }
+
+    userStatusDatabaseRef.onDisconnect().set(isOfflineForDatabase).then(async () => {
+      await userStatusDatabaseRef.set(isOnlineForDatabase);
+      await userStatusFirestoreRef.set(isOnlineForFirestore, { merge: true });
+    });
+  });
 }
 
 // 🧠 ChatGPT Translation Helper

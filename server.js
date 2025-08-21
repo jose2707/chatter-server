@@ -707,6 +707,27 @@ app.post("/google-signin", async (req, res) => {
     return res.status(401).json({ success: false, message: "❌ Invalid Google ID token!" });
   }
 });
+// Middleware to verify JWT token on HTTP routes
+function verifyToken(req, res, next) {
+  const authHeader = req.header("Authorization");
+  if (!authHeader) {
+    return res.status(401).json({ success: false, message: "❌ No token provided" });
+  }
+
+  const token = authHeader.split(" ")[1];
+  if (!token) {
+    return res.status(401).json({ success: false, message: "❌ No token provided" });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    return res.status(401).json({ success: false, message: "❌ Invalid token" });
+  }
+}
+
 
 app.post("/update-location", verifyToken, async (req, res) => {
   const { latitude, longitude } = req.body;

@@ -614,7 +614,7 @@ wss.on("connection", async (ws, req) => {
     const decodedToken = await admin.auth().verifyIdToken(token);
     ws.user = decodedToken; // decodedToken contains uid, email, etc.
     onlineUsers.set(decodedToken.email, ws);
-    
+
     ws.isAlive = true;
     ws.on("pong", heartbeat);
 
@@ -629,6 +629,79 @@ wss.on("connection", async (ws, req) => {
           updateGroupPresence(doc.id, decodedToken.email, true);
         });
       });
+
+    // WebSocket message handlers inside connection scope
+    ws.on("message", async (data) => {
+      try {
+        const payload = JSON.parse(data);
+
+        // Handle different message types
+        if (payload.type === 'webrtc') {
+          await handleWebRTCMessage(ws, payload);
+        }
+        else if (payload.type === 'hangup') {
+          await handleHangupMessage(ws, payload);
+        }
+        else if (payload.isTyping !== undefined) {
+          await handleTypingIndicator(ws, payload);
+        }
+        else if (payload.emoji && payload.messageId) {
+          await handleReaction(ws, payload);
+        }
+        else if (payload.text || payload.imageUrl) {
+          await handleNewMessage(ws, payload);
+        }
+      } catch (error) {
+        console.error("❌ WebSocket Error:", error.message);
+      }
+    });
+
+    ws.on("error", (error) => {
+      console.error(`❌ WebSocket error for ${ws.user?.email}:`, error.message);
+    });
+
+    ws.on("close", () => {
+      const userEmail = ws.user?.email;
+      if (userEmail) {
+        onlineUsers.delete(userEmail);
+        typingIndicators.delete(userEmail);
+        console.log(`🔌 WebSocket disconnected: ${userEmail}`);
+
+        // Clean up any call rooms this user was in
+        callRooms.forEach((participants, roomId) => {
+          if (participants.has(userEmail)) {
+            participants.delete(userEmail);
+
+            // Notify remaining participants
+            participants.forEach(email => {
+              const client = onlineUsers.get(email);
+              if (client && client.readyState === WebSocket.OPEN) {
+                client.send(JSON.stringify({
+                  type: 'callHangup',
+                  roomId,
+                  participantLeft: userEmail
+                }));
+              }
+            });
+
+            // Clean up empty rooms
+            if (participants.size === 0) {
+              callRooms.delete(roomId);
+            }
+          }
+        });
+
+        // Update presence for any groups the user belongs to
+        db.collection('groups')
+          .where('members', 'array-contains', userEmail)
+          .get()
+          .then(snapshot => {
+            snapshot.forEach(doc => {
+              updateGroupPresence(doc.id, userEmail, false);
+            });
+          });
+      }
+    });
 
   } catch (error) {
     console.log("❌ Invalid Firebase token:", error.message);
@@ -649,121 +722,6 @@ setInterval(() => {
     ws.ping(() => {});
   });
 }, 30000);
-
-
-  // WebSocket message handlers
-  ws.on("message", async (data) => {
-    try {
-      const payload = JSON.parse(data);
-
-      // Handle different message types
-      if (payload.type === 'webrtc') {
-        await handleWebRTCMessage(ws, payload);
-      }
-      else if (payload.type === 'hangup') {
-        await handleHangupMessage(ws, payload);
-      }
-      else if (payload.isTyping !== undefined) {
-        await handleTypingIndicator(ws, payload);
-      }
-      else if (payload.emoji && payload.messageId) {
-        await handleReaction(ws, payload);
-      }
-      else if (payload.text || payload.imageUrl) {
-        await handleNewMessage(ws, payload);
-      }
-    } catch (error) {
-      console.error("❌ WebSocket Error:", error.message);
-    }
-  });
-
-  ws.on("error", (error) => {
-    console.error(`❌ WebSocket error for ${ws.user?.email}:`, error.message);
-  });
-
-  ws.on("close", () => {
-    const userEmail = ws.user?.email;
-    if (userEmail) {
-      onlineUsers.delete(userEmail);
-      typingIndicators.delete(userEmail);
-      console.log(`🔌 WebSocket disconnected: ${userEmail}`);
-
-      // Clean up any call rooms this user was in
-      callRooms.forEach((participants, roomId) => {
-        if (participants.has(userEmail)) {
-          participants.delete(userEmail);
-
-          // Notify remaining participants
-          participants.forEach(email => {
-            const client = onlineUsers.get(email);
-            if (client && client.readyState === WebSocket.OPEN) {
-              client.send(JSON.stringify({
-                type: 'callHangup',
-                roomId,
-                participantLeft: userEmail
-              }));
-            }
-          });
-
-          // Clean up empty rooms
-          if (participants.size === 0) {
-            callRooms.delete(roomId);
-          }
-        }
-      });
-
-      // Update presence for any groups the user belongs to
-      db.collection('groups')
-        .where('members', 'array-contains', userEmail)
-        .get()
-        .then(snapshot => {
-          snapshot.forEach(doc => {
-            updateGroupPresence(doc.id, userEmail, false);
-          });
-        });
-    }
-  });
-
-setInterval(() => {
-  wss.clients.forEach((ws) => {
-    if (!ws.isAlive) {
-      console.log(`♻️ Terminating inactive connection: ${ws.user?.email || 'unknown'}`);
-      return ws.terminate();
-    }
-    ws.isAlive = false;
-    ws.ping(noop);
-  });
-
-  // Cleanup expired typing indicators (10s threshold)
-  const now = Date.now();
-  typingIndicators.forEach((timestamp, email) => {
-    if (timestamp && now - timestamp > 10000) {
-      typingIndicators.set(email, null);
-    }
-  });
-}, 30000);
-
-// 🔐 Authentication Middleware
-const verifyToken = (req, res, next) => {
-  const token = req.header("Authorization")?.split(" ")[1];
-  if (!token) {
-    return res.status(401).json({ success: false, message: "❌ No token provided!" });
-  }
-
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = decoded;
-    next();
-  } catch {
-    return res.status(401).json({ success: false, message: "❌ Invalid token!" });
-  }
-};
-
-const messageLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 10,
-  message: { success: false, message: "❌ Too many messages sent, slow down!" },
-});
 
 // Health check endpoint for Render
 app.get('/health', (req, res) => {

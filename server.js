@@ -134,13 +134,14 @@ async function updateGroupPresence(groupId, email, isJoining) {
   try {
     await db.collection('groups').doc(groupId).update({
       'activeMembers': isJoining
-        ? FieldValue.arrayUnion([email])
-        : FieldValue.arrayRemove([email]),
+        ? FieldValue.arrayUnion(email)
+        : FieldValue.arrayRemove(email),
     });
   } catch (error) {
     console.error("❌ Group presence update error:", error);
   }
 }
+
 
 // 🛠️ WebSocket Message Handlers
 async function handleWebRTCMessage(ws, payload) {

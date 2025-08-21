@@ -144,17 +144,16 @@ async function updateGroupPresence(groupId, email, isJoining) {
 
 
 // 🛠️ WebSocket Message Handlers
+// handleWebRTCMessage expecting signalType
 async function handleWebRTCMessage(ws, payload) {
   try {
-    const { roomId, signal, targetUser, type } = payload;
+    const { roomId, signal, targetUser, signalType } = payload;
 
-    // Validate required fields
     if (!roomId) {
       console.error('❌ Missing roomId in WebRTC message');
       return;
     }
 
-    // Initialize room if it doesn't exist
     if (!callRooms.has(roomId)) {
       callRooms.set(roomId, new Set());
       console.log(`🆕 Created new room: ${roomId}`);
@@ -162,41 +161,27 @@ async function handleWebRTCMessage(ws, payload) {
 
     const room = callRooms.get(roomId);
 
-    // Add user to room if not present
     if (!room.has(ws.user.email)) {
       room.add(ws.user.email);
       console.log(`👤 ${ws.user.email} joined room ${roomId}`);
     }
 
-    // Handle different WebRTC signal types
-    switch (type) {
+    switch (signalType) {
       case 'offer':
       case 'answer':
-        // Forward offers/answers to specific target
         if (!targetUser) {
           console.error('❌ Missing targetUser for offer/answer');
           return;
         }
-        await forwardSignal({
-          type,
-          roomId,
-          signal,
-          sender: ws.user.email,
-          targetUser
-        });
+        await forwardSignal({ type: signalType, roomId, signal, sender: ws.user.email, targetUser });
         break;
 
       case 'ice-candidate':
-        // Forward ICE candidates
         if (!targetUser) {
           console.error('❌ Missing targetUser for ICE candidate');
           return;
         }
-        await forwardICECandidate({
-          candidate: signal,
-          sender: ws.user.email,
-          targetUser
-        });
+        await forwardICECandidate({ candidate: signal, sender: ws.user.email, targetUser });
         break;
 
       case 'hangup':
@@ -204,20 +189,15 @@ async function handleWebRTCMessage(ws, payload) {
         break;
 
       default:
-        console.error(`❌ Unknown WebRTC message type: ${type}`);
+        console.error(`❌ Unknown WebRTC signal type: ${signalType}`);
     }
 
-    // Broadcast participant list to all in room
     await broadcastParticipants(roomId, room);
 
   } catch (error) {
     console.error('❌ Error in handleWebRTCMessage:', error);
-    // Notify sender of failure
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        type: 'webrtc-error',
-        error: 'Failed to process signaling message'
-      }));
+      ws.send(JSON.stringify({ type: 'webrtc-error', error: 'Failed to process signaling message' }));
     }
   }
 }
@@ -578,24 +558,21 @@ wss.clients.forEach(client => {
 
 // Set headers for CORS
 // Allow CORS headers for WebSocket upgrade requests
+// Set headers for CORS on WebSocket upgrade requests
 wss.on('headers', (headers, req) => {
   headers.push('Access-Control-Allow-Origin: *');
   headers.push('Access-Control-Allow-Credentials: true');
 });
 
-// Heartbeat function to detect dead connections
+// Heartbeat function for WebSocket liveness
 function heartbeat() {
   this.isAlive = true;
 }
-
-// No-op function for ping
 function noop() {}
 
-// Handle new connections
+// WebSocket connection handler
 wss.on("connection", async (ws, req) => {
   console.log(`🔌 New connection attempt from ${req.socket.remoteAddress}`);
-
-  // Extract token from query
   const url = new URL(req.url, `http://${req.headers.host}`);
   const token = url.searchParams.get("token");
 
@@ -607,15 +584,14 @@ wss.on("connection", async (ws, req) => {
   try {
     // Verify Firebase ID token
     const decodedToken = await admin.auth().verifyIdToken(token);
-    ws.user = decodedToken; // contains uid, email, etc.
+    ws.user = decodedToken;
     onlineUsers.set(decodedToken.email, ws);
 
     ws.isAlive = true;
     ws.on("pong", heartbeat);
-
     console.log(`✅ WebSocket connected: ${decodedToken.email}`);
 
-    // Update presence for any groups the user belongs to
+    // Update presence for groups
     db.collection('groups')
       .where('members', 'array-contains', decodedToken.email)
       .get()
@@ -625,12 +601,13 @@ wss.on("connection", async (ws, req) => {
         });
       });
 
-    // --- Message handling ---
+    // Handle incoming WebSocket messages
     ws.on("message", async (data) => {
       try {
         const payload = JSON.parse(data);
 
         if (payload.type === 'webrtc') {
+          // Expect real WebRTC signal type in signalType field
           await handleWebRTCMessage(ws, payload);
         } else if (payload.type === 'hangup') {
           await handleHangupMessage(ws, payload);
@@ -646,12 +623,10 @@ wss.on("connection", async (ws, req) => {
       }
     });
 
-    // --- Error handling ---
     ws.on("error", (error) => {
       console.error(`❌ WebSocket error for ${ws.user?.email}:`, error.message);
     });
 
-    // --- Disconnect handling ---
     ws.on("close", () => {
       const userEmail = ws.user?.email;
       if (!userEmail) return;
@@ -660,7 +635,7 @@ wss.on("connection", async (ws, req) => {
       typingIndicators.delete(userEmail);
       console.log(`🔌 WebSocket disconnected: ${userEmail}`);
 
-      // Clean up call rooms
+      // Cleanup call rooms user was in and notify others
       callRooms.forEach((participants, roomId) => {
         if (participants.has(userEmail)) {
           participants.delete(userEmail);
@@ -694,40 +669,6 @@ wss.on("connection", async (ws, req) => {
     return ws.close();
   }
 });
-
-// --- Periodic tasks ---
-setInterval(() => {
-  wss.clients.forEach((ws) => {
-    if (!ws.isAlive) {
-      console.log(`♻️ Terminating inactive connection: ${ws.user?.email || 'unknown'}`);
-      return ws.terminate();
-    }
-    ws.isAlive = false;
-    ws.ping(noop);
-  });
-
-  // Cleanup expired typing indicators (10s)
-  const now = Date.now();
-  typingIndicators.forEach((timestamp, email) => {
-    if (timestamp && now - timestamp > 10000) {
-      typingIndicators.set(email, null);
-    }
-  });
-}, 30000);
-
-// 🔐 Authentication Middleware for HTTP routes
-const verifyToken = (req, res, next) => {
-  const token = req.header("Authorization")?.split(" ")[1];
-  if (!token) return res.status(401).json({ success: false, message: "❌ No token provided!" });
-
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = decoded;
-    next();
-  } catch {
-    return res.status(401).json({ success: false, message: "❌ Invalid token!" });
-  }
-};
 
 // Rate limiter for messages
 const messageLimiter = rateLimit({

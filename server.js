@@ -11,8 +11,9 @@ const axios = require("axios");
 const admin = require("firebase-admin");
 const { initializeApp, cert } = require("firebase-admin/app");
 const { getFirestore, FieldValue, FieldPath } = require("firebase-admin/firestore");
-const http = require("http");  // Changed from https to http
+const http = require("http");
 const onlineUsers = new Map();
+
 // 🔥 Firebase initialization with error handling
 try {
   const serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_KEY);
@@ -40,7 +41,7 @@ if (!JWT_SECRET) {
 }
 
 // 🔌 HTTP Server Setup (Render provides HTTPS termination)
-const server = http.createServer(app);  // Changed to HTTP
+const server = http.createServer(app);
 
 // 🔌 WebSocket Setup
 const wss = new WebSocket.Server({
@@ -331,7 +332,6 @@ async function handleHangupMessage(ws, payload) {
   }
 }
 
-
 async function handleTypingIndicator(ws, payload) {
   const { isTyping, receiverEmail, isGroup } = payload;
   const senderEmail = ws.user.email;
@@ -420,7 +420,7 @@ async function handleReaction(ws, payload) {
         }
       });
     }
-} 
+}
 
 async function handleNewMessage(ws, payload) {
   const {
@@ -572,6 +572,8 @@ wss.clients.forEach(client => {
     client.send(JSON.stringify(broadcast));
   }
 });
+  }
+}
 
 // Set headers for CORS
 wss.on('headers', (headers, req) => {
@@ -615,8 +617,8 @@ wss.on("connection", (ws, req) => {
     console.log("❌ Invalid WebSocket token:", error.message);
     return ws.close();
   }
-});
 
+  // WebSocket message handlers
   ws.on("message", async (data) => {
     try {
       const payload = JSON.parse(data);
@@ -642,51 +644,52 @@ wss.on("connection", (ws, req) => {
     }
   });
 
- ws.on("error", (error) => {
-  console.error(`❌ WebSocket error for ${ws.user?.email}:`, error.message);
-});
+  ws.on("error", (error) => {
+    console.error(`❌ WebSocket error for ${ws.user?.email}:`, error.message);
+  });
 
-ws.on("close", () => {
-  const userEmail = ws.user?.email;
-  if (userEmail) {
-    onlineUsers.delete(userEmail);
-    typingIndicators.delete(userEmail);
-    console.log(`🔌 WebSocket disconnected: ${userEmail}`);
+  ws.on("close", () => {
+    const userEmail = ws.user?.email;
+    if (userEmail) {
+      onlineUsers.delete(userEmail);
+      typingIndicators.delete(userEmail);
+      console.log(`🔌 WebSocket disconnected: ${userEmail}`);
 
-    // Clean up any call rooms this user was in
-    callRooms.forEach((participants, roomId) => {
-      if (participants.has(userEmail)) {
-        participants.delete(userEmail);
+      // Clean up any call rooms this user was in
+      callRooms.forEach((participants, roomId) => {
+        if (participants.has(userEmail)) {
+          participants.delete(userEmail);
 
-        // Notify remaining participants
-        participants.forEach(email => {
-          const client = onlineUsers.get(email);
-          if (client && client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({
-              type: 'callHangup',
-              roomId,
-              participantLeft: userEmail
-            }));
+          // Notify remaining participants
+          participants.forEach(email => {
+            const client = onlineUsers.get(email);
+            if (client && client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify({
+                type: 'callHangup',
+                roomId,
+                participantLeft: userEmail
+              }));
+            }
+          });
+
+          // Clean up empty rooms
+          if (participants.size === 0) {
+            callRooms.delete(roomId);
           }
-        });
-
-        // Clean up empty rooms
-        if (participants.size === 0) {
-          callRooms.delete(roomId);
         }
-      }
-    });
-
-    // Update presence for any groups the user belongs to
-    db.collection('groups')
-      .where('members', 'array-contains', userEmail)
-      .get()
-      .then(snapshot => {
-        snapshot.forEach(doc => {
-          updateGroupPresence(doc.id, userEmail, false);
-        });
       });
-  }
+
+      // Update presence for any groups the user belongs to
+      db.collection('groups')
+        .where('members', 'array-contains', userEmail)
+        .get()
+        .then(snapshot => {
+          snapshot.forEach(doc => {
+            updateGroupPresence(doc.id, userEmail, false);
+          });
+        });
+    }
+  });
 });
 
 setInterval(() => {
@@ -760,6 +763,7 @@ app.post("/google-signin", async (req, res) => {
     return res.status(401).json({ success: false, message: "❌ Invalid Google ID token!" });
   }
 });
+
 app.post("/update-location", verifyToken, async (req, res) => {
   const { latitude, longitude } = req.body;
   if (!latitude || !longitude) {
@@ -881,6 +885,7 @@ app.post("/upload-image", upload.single("image"), (req, res) => {
   const imageUrl = `${req.protocol}://${req.get("host")}/uploads/${file.filename}`;
   res.json({ success: true, imageUrl });
 });
+
 app.get("/nearby-users", verifyToken, async (req, res) => {
   const { latitude, longitude, radiusKm } = req.query;
   if (!latitude || !longitude || !radiusKm) {
@@ -1318,6 +1323,7 @@ app.post("/add-group-members", verifyToken, async (req, res) => {
     res.status(500).json({ success: false, message: "Failed to add members" });
   }
 });
+
 
 app.post("/remove-group-member", verifyToken, async (req, res) => {
   try {

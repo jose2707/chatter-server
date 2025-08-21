@@ -1,3 +1,6 @@
+Server.js
+
+
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -220,7 +223,7 @@ async function handleWebRTCMessage(ws, payload) {
   }
 }
 
-// Helper Functions
+// Forward Offer/Answer
 async function forwardSignal({ type, roomId, signal, sender, targetUser }) {
   const targetClient = onlineUsers.get(targetUser);
 
@@ -239,6 +242,7 @@ async function forwardSignal({ type, roomId, signal, sender, targetUser }) {
   console.log(`📤 Forwarded ${type} from ${sender} to ${targetUser}`);
 }
 
+// Forward ICE Candidate
 async function forwardICECandidate({ candidate, sender, targetUser }) {
   const targetClient = onlineUsers.get(targetUser);
 
@@ -256,6 +260,7 @@ async function forwardICECandidate({ candidate, sender, targetUser }) {
   console.log(`🧊 Forwarded ICE candidate from ${sender} to ${targetUser}`);
 }
 
+// Broadcast participants
 async function broadcastParticipants(roomId, room) {
   const participants = Array.from(room);
 
@@ -274,6 +279,7 @@ async function broadcastParticipants(roomId, room) {
   console.log(`📢 Room ${roomId} participants: ${participants.join(', ')}`);
 }
 
+// Handle Call Hangup
 async function handleCallHangup(userEmail, roomId) {
   if (!callRooms.has(roomId)) return;
 
@@ -302,6 +308,7 @@ async function handleCallHangup(userEmail, roomId) {
   }
 }
 
+// Handle Hangup Message (alternate)
 async function handleHangupMessage(ws, payload) {
   const { roomId } = payload;
   if (callRooms.has(roomId)) {
@@ -326,6 +333,7 @@ async function handleHangupMessage(ws, payload) {
     }
   }
 }
+
 
 async function handleTypingIndicator(ws, payload) {
   const { isTyping, receiverEmail, isGroup } = payload;
@@ -395,7 +403,7 @@ async function handleReaction(ws, payload) {
     const groupDoc = await db.collection('groups').doc(receiverEmail).get();
     const members = groupDoc.data()?.members || [];
 
-    wss.clients.forEach(client => {
+    /* wss.clients.forEach(client => {
       if (
         client.readyState === WebSocket.OPEN &&
         client.user &&
@@ -415,7 +423,7 @@ async function handleReaction(ws, payload) {
         }
       });
     }
-}
+} */
 
 async function handleNewMessage(ws, payload) {
   const {
@@ -557,26 +565,27 @@ async function handleNewMessage(ws, payload) {
       .doc(senderEmail)
       .set(recentDataForReceiver, { merge: true });
 
-    // Send to both private chat participants
-    wss.clients.forEach(client => {
-      if (
-        client.readyState === WebSocket.OPEN &&
-        client.user &&
-        [senderEmail, receiverEmail].includes(client.user.email))
-      {
-        client.send(JSON.stringify(broadcast));
-      }
-    });
+   // Send to both private chat participants
+wss.clients.forEach(client => {
+  if (
+    client.readyState === WebSocket.OPEN &&
+    client.user &&
+    [senderEmail, receiverEmail].includes(client.user.email)
+  ) {
+    client.send(JSON.stringify(broadcast));
   }
-}
+});
 
+// Set headers for CORS
 wss.on('headers', (headers, req) => {
   headers.push('Access-Control-Allow-Origin: *');
   headers.push('Access-Control-Allow-Credentials: true');
 });
 
+// Handle new connections
 wss.on("connection", (ws, req) => {
   console.log(`🔌 New connection attempt from ${req.socket.remoteAddress}`);
+
   ws.on('close', () => console.log(`🔌 Disconnected: ${ws.user?.email}`));
 
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -609,6 +618,7 @@ wss.on("connection", (ws, req) => {
     console.log("❌ Invalid WebSocket token:", error.message);
     return ws.close();
   }
+});
 
   ws.on("message", async (data) => {
     try {
@@ -635,52 +645,51 @@ wss.on("connection", (ws, req) => {
     }
   });
 
-  ws.on("error", (error) => {
-    console.error(`❌ WebSocket error for ${ws.user?.email}:`, error.message);
-  });
+ ws.on("error", (error) => {
+  console.error(`❌ WebSocket error for ${ws.user?.email}:`, error.message);
+});
 
-  ws.on("close", () => {
-    const userEmail = ws.user?.email;
-    if (userEmail) {
-      onlineUsers.delete(userEmail);
-      typingIndicators.delete(userEmail);
-      console.log(`🔌 WebSocket disconnected: ${userEmail}`);
+ws.on("close", () => {
+  const userEmail = ws.user?.email;
+  if (userEmail) {
+    onlineUsers.delete(userEmail);
+    typingIndicators.delete(userEmail);
+    console.log(`🔌 WebSocket disconnected: ${userEmail}`);
 
-      // Clean up any call rooms this user was in
-      callRooms.forEach((participants, roomId) => {
-        if (participants.has(userEmail)) {
-          participants.delete(userEmail);
+    // Clean up any call rooms this user was in
+    callRooms.forEach((participants, roomId) => {
+      if (participants.has(userEmail)) {
+        participants.delete(userEmail);
 
-          // Notify remaining participants
-          participants.forEach(email => {
-            const client = onlineUsers.get(email);
-            if (client && client.readyState === WebSocket.OPEN) {
-              client.send(JSON.stringify({
-                type: 'callHangup',
-                roomId,
-                participantLeft: userEmail
-              }));
-            }
-          });
-
-          // Clean up empty rooms
-          if (participants.size === 0) {
-            callRooms.delete(roomId);
+        // Notify remaining participants
+        participants.forEach(email => {
+          const client = onlineUsers.get(email);
+          if (client && client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({
+              type: 'callHangup',
+              roomId,
+              participantLeft: userEmail
+            }));
           }
-        }
-      });
-
-      // Update presence for any groups the user belongs to
-      db.collection('groups')
-        .where('members', 'array-contains', userEmail)
-        .get()
-        .then(snapshot => {
-          snapshot.forEach(doc => {
-            updateGroupPresence(doc.id, userEmail, false);
-          });
         });
-    }
-  });
+
+        // Clean up empty rooms
+        if (participants.size === 0) {
+          callRooms.delete(roomId);
+        }
+      }
+    });
+
+    // Update presence for any groups the user belongs to
+    db.collection('groups')
+      .where('members', 'array-contains', userEmail)
+      .get()
+      .then(snapshot => {
+        snapshot.forEach(doc => {
+          updateGroupPresence(doc.id, userEmail, false);
+        });
+      });
+  }
 });
 
 setInterval(() => {

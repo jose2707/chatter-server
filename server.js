@@ -723,7 +723,6 @@ setInterval(() => {
         });
     }
   });
-});
 
 setInterval(() => {
   wss.clients.forEach((ws) => {

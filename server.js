@@ -582,10 +582,24 @@ wss.on('headers', (headers, req) => {
 });
 
 // Handle new connections
-wss.on("connection", (ws, req) => {
+wss.on("connection", async (ws, req) => {
   console.log(`🔌 New connection attempt from ${req.socket.remoteAddress}`);
 
-  ws.on('close', () => console.log(`🔌 Disconnected: ${ws.user?.email}`));
+  ws.on('close', () => {
+    console.log(`🔌 Disconnected: ${ws.user?.email}`);
+    if (ws.user?.email) {
+      onlineUsers.delete(ws.user.email);
+      // Optionally update group presence to offline
+      db.collection('groups')
+        .where('members', 'array-contains', ws.user.email)
+        .get()
+        .then(snapshot => {
+          snapshot.forEach(doc => {
+            updateGroupPresence(doc.id, ws.user.email, false);
+          });
+        });
+    }
+  });
 
   const url = new URL(req.url, `http://${req.headers.host}`);
   const token = url.searchParams.get("token");
@@ -596,27 +610,46 @@ wss.on("connection", (ws, req) => {
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    ws.user = decoded;
-    onlineUsers.set(decoded.email, ws);
+    // Verify Firebase ID token
+    const decodedToken = await admin.auth().verifyIdToken(token);
+    ws.user = decodedToken; // decodedToken contains uid, email, etc.
+    onlineUsers.set(decodedToken.email, ws);
+    
     ws.isAlive = true;
     ws.on("pong", heartbeat);
-    console.log(`✅ WebSocket connected: ${decoded.email}`);
+
+    console.log(`✅ WebSocket connected: ${decodedToken.email}`);
 
     // Update presence for any groups the user belongs to
     db.collection('groups')
-      .where('members', 'array-contains', decoded.email)
+      .where('members', 'array-contains', decodedToken.email)
       .get()
       .then(snapshot => {
         snapshot.forEach(doc => {
-          updateGroupPresence(doc.id, decoded.email, true);
+          updateGroupPresence(doc.id, decodedToken.email, true);
         });
       });
 
   } catch (error) {
-    console.log("❌ Invalid WebSocket token:", error.message);
+    console.log("❌ Invalid Firebase token:", error.message);
     return ws.close();
   }
+});
+
+// Heartbeat function to detect dead connections
+function heartbeat() {
+  this.isAlive = true;
+}
+
+// Optional: periodically ping clients to check alive status
+setInterval(() => {
+  wss.clients.forEach(ws => {
+    if (!ws.isAlive) return ws.terminate();
+    ws.isAlive = false;
+    ws.ping(() => {});
+  });
+}, 30000);
+
 
   // WebSocket message handlers
   ws.on("message", async (data) => {

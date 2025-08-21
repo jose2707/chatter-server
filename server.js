@@ -400,7 +400,7 @@ async function handleReaction(ws, payload) {
     const groupDoc = await db.collection('groups').doc(receiverEmail).get();
     const members = groupDoc.data()?.members || [];
 
-    /* wss.clients.forEach(client => {
+     wss.clients.forEach(client => {
       if (
         client.readyState === WebSocket.OPEN &&
         client.user &&
@@ -420,7 +420,7 @@ async function handleReaction(ws, payload) {
         }
       });
     }
-} */
+} 
 
 async function handleNewMessage(ws, payload) {
   const {

@@ -576,31 +576,25 @@ wss.clients.forEach(client => {
 }
 
 // Set headers for CORS
+// Allow CORS headers for WebSocket upgrade requests
 wss.on('headers', (headers, req) => {
   headers.push('Access-Control-Allow-Origin: *');
   headers.push('Access-Control-Allow-Credentials: true');
 });
 
+// Heartbeat function to detect dead connections
+function heartbeat() {
+  this.isAlive = true;
+}
+
+// No-op function for ping
+function noop() {}
+
 // Handle new connections
 wss.on("connection", async (ws, req) => {
   console.log(`🔌 New connection attempt from ${req.socket.remoteAddress}`);
 
-  ws.on('close', () => {
-    console.log(`🔌 Disconnected: ${ws.user?.email}`);
-    if (ws.user?.email) {
-      onlineUsers.delete(ws.user.email);
-      // Optionally update group presence to offline
-      db.collection('groups')
-        .where('members', 'array-contains', ws.user.email)
-        .get()
-        .then(snapshot => {
-          snapshot.forEach(doc => {
-            updateGroupPresence(doc.id, ws.user.email, false);
-          });
-        });
-    }
-  });
-
+  // Extract token from query
   const url = new URL(req.url, `http://${req.headers.host}`);
   const token = url.searchParams.get("token");
 
@@ -612,7 +606,7 @@ wss.on("connection", async (ws, req) => {
   try {
     // Verify Firebase ID token
     const decodedToken = await admin.auth().verifyIdToken(token);
-    ws.user = decodedToken; // decodedToken contains uid, email, etc.
+    ws.user = decodedToken; // contains uid, email, etc.
     onlineUsers.set(decodedToken.email, ws);
 
     ws.isAlive = true;
@@ -630,25 +624,20 @@ wss.on("connection", async (ws, req) => {
         });
       });
 
-    // WebSocket message handlers inside connection scope
+    // --- Message handling ---
     ws.on("message", async (data) => {
       try {
         const payload = JSON.parse(data);
 
-        // Handle different message types
         if (payload.type === 'webrtc') {
           await handleWebRTCMessage(ws, payload);
-        }
-        else if (payload.type === 'hangup') {
+        } else if (payload.type === 'hangup') {
           await handleHangupMessage(ws, payload);
-        }
-        else if (payload.isTyping !== undefined) {
+        } else if (payload.isTyping !== undefined) {
           await handleTypingIndicator(ws, payload);
-        }
-        else if (payload.emoji && payload.messageId) {
+        } else if (payload.emoji && payload.messageId) {
           await handleReaction(ws, payload);
-        }
-        else if (payload.text || payload.imageUrl) {
+        } else if (payload.text || payload.imageUrl) {
           await handleNewMessage(ws, payload);
         }
       } catch (error) {
@@ -656,51 +645,47 @@ wss.on("connection", async (ws, req) => {
       }
     });
 
+    // --- Error handling ---
     ws.on("error", (error) => {
       console.error(`❌ WebSocket error for ${ws.user?.email}:`, error.message);
     });
 
+    // --- Disconnect handling ---
     ws.on("close", () => {
       const userEmail = ws.user?.email;
-      if (userEmail) {
-        onlineUsers.delete(userEmail);
-        typingIndicators.delete(userEmail);
-        console.log(`🔌 WebSocket disconnected: ${userEmail}`);
+      if (!userEmail) return;
 
-        // Clean up any call rooms this user was in
-        callRooms.forEach((participants, roomId) => {
-          if (participants.has(userEmail)) {
-            participants.delete(userEmail);
+      onlineUsers.delete(userEmail);
+      typingIndicators.delete(userEmail);
+      console.log(`🔌 WebSocket disconnected: ${userEmail}`);
 
-            // Notify remaining participants
-            participants.forEach(email => {
-              const client = onlineUsers.get(email);
-              if (client && client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify({
-                  type: 'callHangup',
-                  roomId,
-                  participantLeft: userEmail
-                }));
-              }
-            });
-
-            // Clean up empty rooms
-            if (participants.size === 0) {
-              callRooms.delete(roomId);
+      // Clean up call rooms
+      callRooms.forEach((participants, roomId) => {
+        if (participants.has(userEmail)) {
+          participants.delete(userEmail);
+          participants.forEach(email => {
+            const client = onlineUsers.get(email);
+            if (client && client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify({
+                type: 'callHangup',
+                roomId,
+                participantLeft: userEmail
+              }));
             }
-          }
-        });
-
-        // Update presence for any groups the user belongs to
-        db.collection('groups')
-          .where('members', 'array-contains', userEmail)
-          .get()
-          .then(snapshot => {
-            snapshot.forEach(doc => {
-              updateGroupPresence(doc.id, userEmail, false);
-            });
           });
-      }
+          if (participants.size === 0) callRooms.delete(roomId);
+        }
+      });
+
+      // Update group presence offline
+      db.collection('groups')
+        .where('members', 'array-contains', userEmail)
+        .get()
+        .then(snapshot => {
+          snapshot.forEach(doc => {
+            updateGroupPresence(doc.id, userEmail, false);
+          });
+        });
     });
 
   } catch (error) {
@@ -709,19 +694,46 @@ wss.on("connection", async (ws, req) => {
   }
 });
 
-// Heartbeat function to detect dead connections
-function heartbeat() {
-  this.isAlive = true;
-}
-
-// Optional: periodically ping clients to check alive status
+// --- Periodic tasks ---
 setInterval(() => {
-  wss.clients.forEach(ws => {
-    if (!ws.isAlive) return ws.terminate();
+  wss.clients.forEach((ws) => {
+    if (!ws.isAlive) {
+      console.log(`♻️ Terminating inactive connection: ${ws.user?.email || 'unknown'}`);
+      return ws.terminate();
+    }
     ws.isAlive = false;
-    ws.ping(() => {});
+    ws.ping(noop);
+  });
+
+  // Cleanup expired typing indicators (10s)
+  const now = Date.now();
+  typingIndicators.forEach((timestamp, email) => {
+    if (timestamp && now - timestamp > 10000) {
+      typingIndicators.set(email, null);
+    }
   });
 }, 30000);
+
+// 🔐 Authentication Middleware for HTTP routes
+const verifyToken = (req, res, next) => {
+  const token = req.header("Authorization")?.split(" ")[1];
+  if (!token) return res.status(401).json({ success: false, message: "❌ No token provided!" });
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch {
+    return res.status(401).json({ success: false, message: "❌ Invalid token!" });
+  }
+};
+
+// Rate limiter for messages
+const messageLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  message: { success: false, message: "❌ Too many messages sent, slow down!" },
+});
 
 // Health check endpoint for Render
 app.get('/health', (req, res) => {

@@ -147,12 +147,16 @@ async function updateGroupPresence(groupId, email, isJoining) {
 // handleWebRTCMessage expecting signalType
 async function handleWebRTCMessage(ws, payload) {
   try {
-    // Use payload.signalType if defined; otherwise fallback to payload.type
     const { roomId, signal, targetUser } = payload;
     const signalType = payload.signalType || payload.type;
 
     if (!roomId) {
       console.error('❌ Missing roomId in WebRTC message');
+      return;
+    }
+
+    if (!signalType) {
+      console.error('❌ Missing signalType in WebRTC message', payload);
       return;
     }
 

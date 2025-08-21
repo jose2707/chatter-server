@@ -13,9 +13,6 @@ const { initializeApp, cert } = require("firebase-admin/app");
 const { getFirestore, FieldValue, FieldPath } = require("firebase-admin/firestore");
 const http = require("http");  // Changed from https to http
 const onlineUsers = new Map();
-const realtimeDb = admin.database();
-const firestore = admin.firestore();
-
 // 🔥 Firebase initialization with error handling
 try {
   const serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_KEY);

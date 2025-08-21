@@ -12,7 +12,7 @@ const admin = require("firebase-admin");
 const { initializeApp, cert } = require("firebase-admin/app");
 const { getFirestore, FieldValue, FieldPath } = require("firebase-admin/firestore");
 const http = require("http");  // Changed from https to http
-const onlineUsers = {};
+const onlineUsers = new Map();
 
 // 🔥 Firebase initialization with error handling
 try {
@@ -719,6 +719,38 @@ app.post("/google-signin", async (req, res) => {
     return res.status(401).json({ success: false, message: "❌ Invalid Google ID token!" });
   }
 });
+app.post("/update-location", verifyToken, async (req, res) => {
+  const { latitude, longitude } = req.body;
+  if (!latitude || !longitude) {
+    return res.status(400).json({ success: false, message: "Missing coordinates" });
+  }
+
+  try {
+    const uid = req.user.uid || req.user.email; // match your JWT payload
+    const username = req.user.username || req.user.email;
+
+    const geoPoint = new admin.firestore.GeoPoint(latitude, longitude);
+
+    // Compute geohash with a library for GeoFirePoint equivalent if needed
+    // Here assume you store similar data to Flutter's GeoFirePoint structure
+
+    await db.collection('users').doc(uid).set({
+      uid,
+      username,
+      location: {
+        geopoint: geoPoint,
+        // Add geohash if you want geoqueries server side
+      },
+      locationEnabled: true,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    res.status(200).json({ success: true, message: "Location updated" });
+  } catch (error) {
+    console.error("❌ Location update error:", error);
+    res.status(500).json({ success: false, message: "Failed to update location" });
+  }
+});
 
 // 🔥 FIXED: Registration endpoint with proper Firestore permissions
 app.post("/register", async (req, res) => {
@@ -807,6 +839,31 @@ app.post("/upload-image", upload.single("image"), (req, res) => {
 
   const imageUrl = `${req.protocol}://${req.get("host")}/uploads/${file.filename}`;
   res.json({ success: true, imageUrl });
+});
+app.get("/nearby-users", verifyToken, async (req, res) => {
+  const { latitude, longitude, radiusKm } = req.query;
+  if (!latitude || !longitude || !radiusKm) {
+    return res.status(400).json({ success: false, message: "Missing location or radius" });
+  }
+
+  // Implement geospatial query here using geohash or Firestore geo queries
+  // For now, just a placeholder response.
+
+  try {
+    // Sample query: Fetch all users where locationEnabled == true
+    const usersSnapshot = await db.collection('users')
+      .where('locationEnabled', '==', true)
+      .get();
+
+    const users = usersSnapshot.docs.map(doc => doc.data());
+
+    // You would normally filter on distance to latitude/longitude and radiusKm
+
+    res.status(200).json({ success: true, users });
+  } catch (error) {
+    console.error('❌ Nearby users query error', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch nearby users' });
+  }
 });
 
 // 🔍 Search Endpoints

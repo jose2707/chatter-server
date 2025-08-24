@@ -733,7 +733,25 @@ function verifyToken(req, res, next) {
     return res.status(401).json({ success: false, message: "❌ Invalid token" });
   }
 }
+// Add these to your Express server setup
+app.use('/assets/audio', express.static('public/assets/audio', {
+  setHeaders: (res, path) => {
+    if (path.endsWith('.mp3') || path.endsWith('.wav') || 
+        path.endsWith('.ogg') || path.endsWith('.m4a')) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+  }
+}));
 
+// Handle CORS for audio files
+app.use((req, res, next) => {
+  if (req.path.match(/\.(mp3|wav|ogg|m4a)$/)) {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, HEAD');
+  }
+  next();
+});
 
 app.post("/update-location", verifyToken, async (req, res) => {
   const { latitude, longitude } = req.body;

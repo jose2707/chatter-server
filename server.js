@@ -97,6 +97,33 @@ async function setUserPresence(userEmail) {
     });
   });
 }
+// FCM helper
+async function sendFCMNotification(token, title, body, data = {}) {
+  try {
+    const message = {
+      token,
+      notification: {
+        title,
+        body,
+      },
+      data, // custom payload (chatId, sender, etc.)
+      android: {
+        priority: "high",
+      },
+      apns: {
+        payload: {
+          aps: { sound: "default" },
+        },
+      },
+    };
+
+    await admin.messaging().send(message);
+    console.log("✅ FCM sent to", token);
+  } catch (err) {
+    console.error("❌ FCM error:", err.message);
+  }
+}
+
 async function sendFCMNotification(token, title, body, data) {
   try {
     const message = {
@@ -521,6 +548,41 @@ async function handleNewMessage(ws, payload) {
     });
 
     await batch.commit();
+if (isGroup) {
+  // Group: send notification to all except sender
+  const groupDoc = await db.collection("groups").doc(receiverEmail).get();
+  const groupData = groupDoc.data();
+  const members = groupData?.members || [];
+
+  for (const member of members) {
+    if (member !== senderEmail) {
+      const userDoc = await db.collection("users").doc(member).get();
+      const token = userDoc.data()?.fcmToken;
+
+      if (token) {
+        await sendFCMNotification(
+          token,
+          `${groupData?.name || "Group"}: ${senderEmail}`,
+          imageUrl ? "📷 Image" : text,
+          { chatId, sender: senderEmail, isGroup: "true" }
+        );
+      }
+    }
+  }
+} else {
+  // Private chat
+  const userDoc = await db.collection("users").doc(receiverEmail).get();
+  const token = userDoc.data()?.fcmToken;
+
+  if (token) {
+    await sendFCMNotification(
+      token,
+      `New message from ${senderEmail}`,
+      imageUrl ? "📷 Image" : text,
+      { chatId, sender: senderEmail, isGroup: "false" }
+    );
+  }
+}
 
 
     // Send to all online group members

@@ -97,6 +97,21 @@ async function setUserPresence(userEmail) {
     });
   });
 }
+async function sendFCMNotification(token, title, body, data) {
+  try {
+    const message = {
+      notification: { title, body },
+      data: data,
+      token: token
+    };
+
+    const response = await admin.messaging().send(message);
+    console.log('✅ Successfully sent FCM message:', response);
+  } catch (error) {
+    console.error('❌ Error sending FCM message:', error);
+  }
+}
+
 
 // 🧠 ChatGPT Translation Helper
 async function translateWithChatGPT(text, targetLang = "hi") {
@@ -506,6 +521,7 @@ async function handleNewMessage(ws, payload) {
     });
 
     await batch.commit();
+
 
     // Send to all online group members
     wss.clients.forEach(client => {

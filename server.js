@@ -50,7 +50,6 @@ const wss = new WebSocket.Server({
   clientTracking: true
 });
 
-const callRooms = new Map();
 const typingIndicators = new Map();
 
 function noop() {}
@@ -187,193 +186,8 @@ async function updateGroupPresence(groupId, email, isJoining) {
 
 // 🛠️ WebSocket Message Handlers
 // handleWebRTCMessage expecting signalType
-async function handleWebRTCMessage(ws, payload) {
-   console.log('📨 Received WebRTC message:', JSON.stringify(payload, null, 2));
-  try {
-    const { roomId, signal, targetUser } = payload;
-    
-    
-    // Extract signalType from the signal object, not the main payload
-    const signalType = signal?.type || payload.signalType;
-
-    if (!roomId) {
-      console.error('❌ Missing roomId in WebRTC message');
-      return;
-    }
-
-    if (!signalType) {
-      console.error('❌ Missing signalType in WebRTC message', payload);
-      return;
-    }
-
-    if (!callRooms.has(roomId)) {
-      callRooms.set(roomId, new Set());
-      console.log(`🆕 Created new room: ${roomId}`);
-    }
-
-    const room = callRooms.get(roomId);
-
-    if (!room.has(ws.user.email)) {
-      room.add(ws.user.email);
-      console.log(`👤 ${ws.user.email} joined room ${roomId}`);
-    }
-
-    switch (signalType) {
-      case 'offer':
-      case 'answer':
-        if (!targetUser) {
-          console.error('❌ Missing targetUser for offer/answer');
-          return;
-        }
-        await forwardSignal({ 
-          type: signalType, 
-          roomId, 
-          signal: signal.sdp || signal, 
-          sender: ws.user.email, 
-          targetUser 
-        });
-        break;
-
-      case 'ice-candidate':
-        if (!targetUser) {
-          console.error('❌ Missing targetUser for ICE candidate');
-          return;
-        }
-        await forwardICECandidate({ 
-          candidate: signal.candidate || signal, 
-          sender: ws.user.email, 
-          targetUser 
-        });
-        break;
-
-      case 'hangup':
-        await handleCallHangup(ws.user.email, roomId);
-        break;
-
-      default:
-        console.error(`❌ Unknown WebRTC signal type: ${signalType}`);
-    }
-
-    await broadcastParticipants(roomId, room);
-
-  } catch (error) {
-    console.error('❌ Error in handleWebRTCMessage:', error);
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'webrtc-error', error: 'Failed to process signaling message' }));
-    }
-  }
-}
 
 // Forward Offer/Answer
-async function forwardSignal({ type, roomId, signal, sender, targetUser }) {
-  const targetClient = onlineUsers.get(targetUser);
-
-  if (!targetClient || targetClient.readyState !== WebSocket.OPEN) {
-    console.error(`❌ Target ${targetUser} not available`);
-    throw new Error('Target user not connected');
-  }
-
-  targetClient.send(JSON.stringify({
-    type,
-    roomId,
-    signal,
-    sender
-  }));
-
-  console.log(`📤 Forwarded ${type} from ${sender} to ${targetUser}`);
-}
-
-// Forward ICE Candidate
-async function forwardICECandidate({ candidate, sender, targetUser }) {
-  const targetClient = onlineUsers.get(targetUser);
-
-  if (!targetClient || targetClient.readyState !== WebSocket.OPEN) {
-    console.error(`❌ Target ${targetUser} not available for ICE candidate`);
-    return;
-  }
-
-  targetClient.send(JSON.stringify({
-    type: 'ice-candidate',
-    candidate,
-    sender
-  }));
-
-  console.log(`🧊 Forwarded ICE candidate from ${sender} to ${targetUser}`);
-}
-
-// Broadcast participants
-async function broadcastParticipants(roomId, room) {
-  const participants = Array.from(room);
-
-  room.forEach(email => {
-    const client = onlineUsers.get(email);
-    if (client?.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify({
-        type: 'callParticipants',
-        roomId,
-        participants,
-        timestamp: Date.now()
-      }));
-    }
-  });
-
-  console.log(`📢 Room ${roomId} participants: ${participants.join(', ')}`);
-}
-
-// Handle Call Hangup
-async function handleCallHangup(userEmail, roomId) {
-  if (!callRooms.has(roomId)) return;
-
-  const room = callRooms.get(roomId);
-  room.delete(userEmail);
-
-  // Notify remaining participants
-  room.forEach(email => {
-    const client = onlineUsers.get(email);
-    if (client?.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify({
-        type: 'callHangup',
-        roomId,
-        participantLeft: userEmail,
-        remainingParticipants: Array.from(room)
-      }));
-    }
-  });
-
-  // Clean up empty rooms
-  if (room.size === 0) {
-    callRooms.delete(roomId);
-    console.log(`🗑️ Room ${roomId} cleaned up (no participants)`);
-  } else {
-    console.log(`👋 ${userEmail} left room ${roomId}`);
-  }
-}
-
-// Handle Hangup Message (alternate)
-async function handleHangupMessage(ws, payload) {
-  const { roomId } = payload;
-  if (callRooms.has(roomId)) {
-    const room = callRooms.get(roomId);
-    room.delete(ws.user.email);
-
-    // Notify remaining participants
-    room.forEach(email => {
-      const client = onlineUsers.get(email);
-      if (client && client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify({
-          type: 'callHangup',
-          roomId,
-          participantLeft: ws.user.email
-        }));
-      }
-    });
-
-    // Clean up empty rooms
-    if (room.size === 0) {
-      callRooms.delete(roomId);
-    }
-  }
-}
 
 async function handleTypingIndicator(ws, payload) {
   const { isTyping, receiverEmail, isGroup } = payload;
@@ -700,82 +514,167 @@ wss.on("connection", async (ws, req) => {
       });
 
     // Handle incoming WebSocket messages
-    ws.on("message", async (data) => {
-  try {
-    const payload = JSON.parse(data);
+  ws.on("message", async (data) => {
+    try {
+      const payload = JSON.parse(data);
 
-    // Handle WebRTC signaling messages
-    if (payload.type === 'webrtc') {
-      await handleWebRTCMessage(ws, payload);
-    } 
-    // Handle other message types...
-    else if (payload.type === 'hangup') {
-      await handleHangupMessage(ws, payload);
-    } else if (payload.isTyping !== undefined) {
-      await handleTypingIndicator(ws, payload);
-    } else if (payload.emoji && payload.messageId) {
-      await handleReaction(ws, payload);
-    } else if (payload.text || payload.imageUrl) {
-      await handleNewMessage(ws, payload);
+      // Remove WebRTC handling completely:
+      // if (payload.type === 'webrtc') {
+      //   await handleWebRTCMessage(ws, payload);
+      // }
+      // Remove hangup handling:
+      // else if (payload.type === 'hangup') {
+      //   await handleHangupMessage(ws, payload);
+      // }
+
+      // Keep only these message types:
+      if (payload.isTyping !== undefined) {
+        await handleTypingIndicator(ws, payload);
+      } else if (payload.emoji && payload.messageId) {
+        await handleReaction(ws, payload);
+      } else if (payload.text || payload.imageUrl) {
+        await handleNewMessage(ws, payload);
+      }
+    } catch (error) {
+      console.error("❌ WebSocket Error:", error.message);
     }
-  } catch (error) {
-    console.error("❌ WebSocket Error:", error.message);
-  }
-});
+  });
+
     ws.on("error", (error) => {
       console.error(`❌ WebSocket error for ${ws.user?.email}:`, error.message);
     });
 
-    ws.on("close", () => {
-      const userEmail = ws.user?.email;
-      if (!userEmail) return;
+   // In WebSocket close handler, remove call room cleanup:
+   ws.on("close", () => {
+     const userEmail = ws.user?.email;
+     if (!userEmail) return;
 
-      onlineUsers.delete(userEmail);
-      typingIndicators.delete(userEmail);
-      console.log(`🔌 WebSocket disconnected: ${userEmail}`);
+     onlineUsers.delete(userEmail);
+     typingIndicators.delete(userEmail);
+     console.log(`🔌 WebSocket disconnected: ${userEmail}`);
 
-      // Cleanup call rooms user was in and notify others
-      callRooms.forEach((participants, roomId) => {
-        if (participants.has(userEmail)) {
-          participants.delete(userEmail);
-          participants.forEach(email => {
-            const client = onlineUsers.get(email);
-            if (client && client.readyState === WebSocket.OPEN) {
-              client.send(JSON.stringify({
-                type: 'callHangup',
-                roomId,
-                participantLeft: userEmail
-              }));
-            }
-          });
-          if (participants.size === 0) callRooms.delete(roomId);
+     // Remove call room cleanup completely:
+     // callRooms.forEach((participants, roomId) => {
+     //   if (participants.has(userEmail)) {
+     //     participants.delete(userEmail);
+     //     participants.forEach(email => {
+     //       const client = onlineUsers.get(email);
+     //       if (client && client.readyState === WebSocket.OPEN) {
+     //         client.send(JSON.stringify({
+     //           type: 'callHangup',
+     //           roomId,
+     //           participantLeft: userEmail
+     //         }));
+     //       }
+     //     });
+     //     if (participants.size === 0) callRooms.delete(roomId);
+     //   }
+     // });
+
+     // Keep group presence update:
+     db.collection('groups')
+       .where('members', 'array-contains', userEmail)
+       .get()
+       .then(snapshot => {
+         snapshot.forEach(doc => {
+           updateGroupPresence(doc.id, userEmail, false);
+         });
+       });
+   });
+app.post("/initiate-call", verifyToken, async (req, res) => {
+  try {
+    const { targetEmail, isGroup } = req.body;
+    const callerEmail = req.user.email;
+    
+    // Generate a unique room ID
+    const roomId = `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    // For group calls, notify all members
+    if (isGroup) {
+      const groupDoc = await db.collection('groups').doc(targetEmail).get();
+      if (!groupDoc.exists) {
+        return res.status(404).json({ success: false, message: "Group not found" });
+      }
+      
+      const members = groupDoc.data().members || [];
+      
+      // Send notification to all group members
+      members.forEach(member => {
+        if (member !== callerEmail) {
+          const client = onlineUsers.get(member);
+          if (client && client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({
+              type: 'call-invitation',
+              roomId: roomId,
+              caller: callerEmail,
+              groupId: targetEmail,
+              timestamp: Date.now()
+            }));
+          }
         }
       });
-
-      // Update group presence offline
-      db.collection('groups')
-        .where('members', 'array-contains', userEmail)
-        .get()
-        .then(snapshot => {
-          snapshot.forEach(doc => {
-            updateGroupPresence(doc.id, userEmail, false);
-          });
-        });
+    } else {
+      // For private calls, notify the specific user
+      const client = onlineUsers.get(targetEmail);
+      if (client && client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify({
+          type: 'call-invitation',
+          roomId: roomId,
+          caller: callerEmail,
+          timestamp: Date.now()
+        }));
+      }
+    }
+    
+    res.status(200).json({
+      success: true,
+      roomId: roomId,
+      message: "Call initiated"
     });
-
+    
   } catch (error) {
-    console.log("❌ Invalid Firebase token:", error.message);
-    return ws.close();
+    console.error("❌ Call initiation error:", error);
+    res.status(500).json({ success: false, message: "Failed to initiate call" });
   }
 });
 
-// Rate limiter for messages
-const messageLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 10,
-  message: { success: false, message: "❌ Too many messages sent, slow down!" },
+// Add a call response endpoint
+app.post("/respond-to-call", verifyToken, async (req, res) => {
+  try {
+    const { roomId, accepted, callerEmail } = req.body;
+    const responderEmail = req.user.email;
+    
+    if (accepted) {
+      // Notify the caller that the call was accepted
+      const callerClient = onlineUsers.get(callerEmail);
+      if (callerClient && callerClient.readyState === WebSocket.OPEN) {
+        callerClient.send(JSON.stringify({
+          type: 'call-accepted',
+          roomId: roomId,
+          responder: responderEmail,
+          timestamp: Date.now()
+        }));
+      }
+    } else {
+      // Notify the caller that the call was rejected
+      const callerClient = onlineUsers.get(callerEmail);
+      if (callerClient && callerClient.readyState === WebSocket.OPEN) {
+        callerClient.send(JSON.stringify({
+          type: 'call-rejected',
+          roomId: roomId,
+          responder: responderEmail,
+          timestamp: Date.now()
+        }));
+      }
+    }
+    
+    res.status(200).json({ success: true, message: "Call response sent" });
+    
+  } catch (error) {
+    console.error("❌ Call response error:", error);
+    res.status(500).json({ success: false, message: "Failed to respond to call" });
+  }
 });
-
 // Health check endpoint for Render
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'healthy' });
@@ -829,7 +728,7 @@ function verifyToken(req, res, next) {
 // Add these to your Express server setup
 app.use('/assets/audio', express.static('public/assets/audio', {
   setHeaders: (res, path) => {
-    if (path.endsWith('.mp3') || path.endsWith('.wav') || 
+    if (path.endsWith('.mp3') || path.endsWith('.wav') ||
         path.endsWith('.ogg') || path.endsWith('.m4a')) {
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       res.setHeader('Access-Control-Allow-Origin', '*');

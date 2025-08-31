@@ -514,90 +514,71 @@ wss.on("connection", async (ws, req) => {
       });
 
     // Handle incoming WebSocket messages
-  ws.on("message", async (data) => {
-    try {
-      const payload = JSON.parse(data);
+    ws.on("message", async (data) => {
+      try {
+        const payload = JSON.parse(data);
 
-      // Remove WebRTC handling completely:
-      // if (payload.type === 'webrtc') {
-      //   await handleWebRTCMessage(ws, payload);
-      // }
-      // Remove hangup handling:
-      // else if (payload.type === 'hangup') {
-      //   await handleHangupMessage(ws, payload);
-      // }
-
-      // Keep only these message types:
-      if (payload.isTyping !== undefined) {
-        await handleTypingIndicator(ws, payload);
-      } else if (payload.emoji && payload.messageId) {
-        await handleReaction(ws, payload);
-      } else if (payload.text || payload.imageUrl) {
-        await handleNewMessage(ws, payload);
+        // Keep only these message types:
+        if (payload.isTyping !== undefined) {
+          await handleTypingIndicator(ws, payload);
+        } else if (payload.emoji && payload.messageId) {
+          await handleReaction(ws, payload);
+        } else if (payload.text || payload.imageUrl) {
+          await handleNewMessage(ws, payload);
+        }
+      } catch (error) {
+        console.error("❌ WebSocket Error:", error.message);
       }
-    } catch (error) {
-      console.error("❌ WebSocket Error:", error.message);
-    }
-  });
+    });
 
     ws.on("error", (error) => {
       console.error(`❌ WebSocket error for ${ws.user?.email}:`, error.message);
     });
 
-   // In WebSocket close handler, remove call room cleanup:
-   ws.on("close", () => {
-     const userEmail = ws.user?.email;
-     if (!userEmail) return;
+    // In WebSocket close handler, remove call room cleanup:
+    ws.on("close", () => {
+      const userEmail = ws.user?.email;
+      if (!userEmail) return;
 
-     onlineUsers.delete(userEmail);
-     typingIndicators.delete(userEmail);
-     console.log(`🔌 WebSocket disconnected: ${userEmail}`);
+      onlineUsers.delete(userEmail);
+      typingIndicators.delete(userEmail);
+      console.log(`🔌 WebSocket disconnected: ${userEmail}`);
 
-     // Remove call room cleanup completely:
-     // callRooms.forEach((participants, roomId) => {
-     //   if (participants.has(userEmail)) {
-     //     participants.delete(userEmail);
-     //     participants.forEach(email => {
-     //       const client = onlineUsers.get(email);
-     //       if (client && client.readyState === WebSocket.OPEN) {
-     //         client.send(JSON.stringify({
-     //           type: 'callHangup',
-     //           roomId,
-     //           participantLeft: userEmail
-     //         }));
-     //       }
-     //     });
-     //     if (participants.size === 0) callRooms.delete(roomId);
-     //   }
-     // });
+      // Keep group presence update:
+      db.collection('groups')
+        .where('members', 'array-contains', userEmail)
+        .get()
+        .then(snapshot => {
+          snapshot.forEach(doc => {
+            updateGroupPresence(doc.id, userEmail, false);
+          });
+        });
+    }); // <-- This was missing
 
-     // Keep group presence update:
-     db.collection('groups')
-       .where('members', 'array-contains', userEmail)
-       .get()
-       .then(snapshot => {
-         snapshot.forEach(doc => {
-           updateGroupPresence(doc.id, userEmail, false);
-         });
-       });
-   });
+  } catch (error) {
+    console.log("❌ Invalid Firebase token:", error.message);
+    return ws.close();
+  }
+}); // <-- This was missing
+
+// Add the call initiation endpoints AFTER the WebSocket connection handler
 app.post("/initiate-call", verifyToken, async (req, res) => {
   try {
     const { targetEmail, isGroup } = req.body;
     const callerEmail = req.user.email;
-    
+
     // Generate a unique room ID
     const roomId = `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    
+
     // For group calls, notify all members
     if (isGroup) {
       const groupDoc = await db.collection('groups').doc(targetEmail).get();
       if (!groupDoc.exists) {
         return res.status(404).json({ success: false, message: "Group not found" });
       }
-      
+
       const members = groupDoc.data().members || [];
-      
+
       // Send notification to all group members
       members.forEach(member => {
         if (member !== callerEmail) {
@@ -625,13 +606,13 @@ app.post("/initiate-call", verifyToken, async (req, res) => {
         }));
       }
     }
-    
+
     res.status(200).json({
       success: true,
       roomId: roomId,
       message: "Call initiated"
     });
-    
+
   } catch (error) {
     console.error("❌ Call initiation error:", error);
     res.status(500).json({ success: false, message: "Failed to initiate call" });
@@ -643,7 +624,7 @@ app.post("/respond-to-call", verifyToken, async (req, res) => {
   try {
     const { roomId, accepted, callerEmail } = req.body;
     const responderEmail = req.user.email;
-    
+
     if (accepted) {
       // Notify the caller that the call was accepted
       const callerClient = onlineUsers.get(callerEmail);
@@ -667,13 +648,18 @@ app.post("/respond-to-call", verifyToken, async (req, res) => {
         }));
       }
     }
-    
+
     res.status(200).json({ success: true, message: "Call response sent" });
-    
+
   } catch (error) {
     console.error("❌ Call response error:", error);
     res.status(500).json({ success: false, message: "Failed to respond to call" });
   }
+}); // <-- This was missing
+
+// Health check endpoint for Render
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'healthy' });
 });
 // Health check endpoint for Render
 app.get('/health', (req, res) => {

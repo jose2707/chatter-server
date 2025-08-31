@@ -188,9 +188,13 @@ async function updateGroupPresence(groupId, email, isJoining) {
 // 🛠️ WebSocket Message Handlers
 // handleWebRTCMessage expecting signalType
 async function handleWebRTCMessage(ws, payload) {
+   console.log('📨 Received WebRTC message:', JSON.stringify(payload, null, 2));
   try {
     const { roomId, signal, targetUser } = payload;
-    const signalType = payload.signalType || payload.type;
+    
+    
+    // Extract signalType from the signal object, not the main payload
+    const signalType = signal?.type || payload.signalType;
 
     if (!roomId) {
       console.error('❌ Missing roomId in WebRTC message');
@@ -221,7 +225,13 @@ async function handleWebRTCMessage(ws, payload) {
           console.error('❌ Missing targetUser for offer/answer');
           return;
         }
-        await forwardSignal({ type: signalType, roomId, signal, sender: ws.user.email, targetUser });
+        await forwardSignal({ 
+          type: signalType, 
+          roomId, 
+          signal: signal.sdp || signal, 
+          sender: ws.user.email, 
+          targetUser 
+        });
         break;
 
       case 'ice-candidate':
@@ -229,7 +239,11 @@ async function handleWebRTCMessage(ws, payload) {
           console.error('❌ Missing targetUser for ICE candidate');
           return;
         }
-        await forwardICECandidate({ candidate: signal, sender: ws.user.email, targetUser });
+        await forwardICECandidate({ 
+          candidate: signal.candidate || signal, 
+          sender: ws.user.email, 
+          targetUser 
+        });
         break;
 
       case 'hangup':
@@ -687,26 +701,27 @@ wss.on("connection", async (ws, req) => {
 
     // Handle incoming WebSocket messages
     ws.on("message", async (data) => {
-      try {
-        const payload = JSON.parse(data);
+  try {
+    const payload = JSON.parse(data);
 
-        if (payload.type === 'webrtc') {
-          // Expect real WebRTC signal type in signalType field
-          await handleWebRTCMessage(ws, payload);
-        } else if (payload.type === 'hangup') {
-          await handleHangupMessage(ws, payload);
-        } else if (payload.isTyping !== undefined) {
-          await handleTypingIndicator(ws, payload);
-        } else if (payload.emoji && payload.messageId) {
-          await handleReaction(ws, payload);
-        } else if (payload.text || payload.imageUrl) {
-          await handleNewMessage(ws, payload);
-        }
-      } catch (error) {
-        console.error("❌ WebSocket Error:", error.message);
-      }
-    });
-
+    // Handle WebRTC signaling messages
+    if (payload.type === 'webrtc') {
+      await handleWebRTCMessage(ws, payload);
+    } 
+    // Handle other message types...
+    else if (payload.type === 'hangup') {
+      await handleHangupMessage(ws, payload);
+    } else if (payload.isTyping !== undefined) {
+      await handleTypingIndicator(ws, payload);
+    } else if (payload.emoji && payload.messageId) {
+      await handleReaction(ws, payload);
+    } else if (payload.text || payload.imageUrl) {
+      await handleNewMessage(ws, payload);
+    }
+  } catch (error) {
+    console.error("❌ WebSocket Error:", error.message);
+  }
+});
     ws.on("error", (error) => {
       console.error(`❌ WebSocket error for ${ws.user?.email}:`, error.message);
     });

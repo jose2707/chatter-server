@@ -50,6 +50,7 @@ const wss = new WebSocket.Server({
   clientTracking: true
 });
 
+const callRooms = new Map();
 const typingIndicators = new Map();
 
 function noop() {}
@@ -514,23 +515,46 @@ wss.on("connection", async (ws, req) => {
       });
 
     // Handle incoming WebSocket messages
-    ws.on("message", async (data) => {
-      try {
-        const payload = JSON.parse(data);
+   ws.on("message", async (data) => {
+       try {
+         const payload = JSON.parse(data);
 
-        // Keep only these message types:
-        if (payload.isTyping !== undefined) {
-          await handleTypingIndicator(ws, payload);
-        } else if (payload.emoji && payload.messageId) {
-          await handleReaction(ws, payload);
-        } else if (payload.text || payload.imageUrl) {
-          await handleNewMessage(ws, payload);
-        }
-      } catch (error) {
-        console.error("❌ WebSocket Error:", error.message);
-      }
-    });
+         // Handle call-related messages
+         if (payload.type === "call-joined") {
+           // Notify other participants that someone joined
+           const { roomId, userName } = payload;
 
+           wss.clients.forEach(client => {
+             if (client !== ws && client.readyState === WebSocket.OPEN) {
+               client.send(JSON.stringify({
+                 type: "participant-joined",
+                 roomId: roomId,
+                 userName: userName,
+                 timestamp: Date.now()
+               }));
+             }
+           });
+         }
+         else if (payload.type === "call-left") {
+           // Notify other participants that someone left
+           const { roomId, userName } = payload;
+
+           wss.clients.forEach(client => {
+             if (client !== ws && client.readyState === WebSocket.OPEN) {
+               client.send(JSON.stringify({
+                 type: "participant-left",
+                 roomId: roomId,
+                 userName: userName,
+                 timestamp: Date.now()
+               }));
+             }
+           });
+         }
+
+       } catch (error) {
+         console.error("❌ WebSocket message error:", error);
+       }
+     });
     ws.on("error", (error) => {
       console.error(`❌ WebSocket error for ${ws.user?.email}:`, error.message);
     });
@@ -666,6 +690,197 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'healthy' });
 });
 
+// Create a call room
+app.post("/create-call-room", verifyToken, async (req, res) => {
+  try {
+    const { roomId, userName, userId } = req.body;
+    const creatorEmail = req.user.email;
+
+    if (!roomId) {
+      return res.status(400).json({
+        success: false,
+        message: "Room ID is required"
+      });
+    }
+
+    // Create the call room in Firestore
+    await db.collection("calls").doc(roomId).set({
+      "roomId": roomId,
+      "creator": creatorEmail,
+      "creatorId": userId,
+      "participants": [userId],
+      "participantNames": [userName],
+      "createdAt": admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    res.status(200).json({
+      success: true,
+      roomId: roomId,
+      message: "Call room created successfully"
+    });
+
+  } catch (error) {
+    console.error("❌ Create call room error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to create call room"
+    });
+  }
+});
+
+// Join a call room
+app.post("/join-call-room", verifyToken, async (req, res) => {
+  try {
+    const { roomId, userName, userId } = req.body;
+    const userEmail = req.user.email;
+
+    if (!roomId) {
+      return res.status(400).json({
+        success: false,
+        message: "Room ID is required"
+      });
+    }
+
+    // Check if room exists
+    const roomDoc = await db.collection("calls").doc(roomId).get();
+    if (!roomDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        message: "Call room not found"
+      });
+    }
+
+    // Add user to the call room
+    await db.collection("calls").doc(roomId).update({
+      "participants": admin.firestore.FieldValue.arrayUnion(userId),
+      "participantNames": admin.firestore.FieldValue.arrayUnion(userName),
+    });
+
+    res.status(200).json({
+      success: true,
+      roomId: roomId,
+      message: "Joined call room successfully"
+    });
+
+  } catch (error) {
+    console.error("❌ Join call room error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to join call room"
+    });
+  }
+});
+
+// Leave a call room
+app.post("/leave-call-room", verifyToken, async (req, res) => {
+  try {
+    const { roomId, userId, userName, isHost } = req.body;
+    const userEmail = req.user.email;
+
+    if (!roomId) {
+      return res.status(400).json({
+        success: false,
+        message: "Room ID is required"
+      });
+    }
+
+    const docRef = db.collection("calls").doc(roomId);
+
+    await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(docRef);
+      if (!snapshot.exists) return;
+
+      const participants = snapshot.data().participants || [];
+      const participantNames = snapshot.data().participantNames || [];
+
+      // Remove user from participants
+      participants.splice(participants.indexOf(userId), 1);
+      participantNames.splice(participantNames.indexOf(userName), 1);
+
+      if (participants.length === 0 || isHost) {
+        // Delete room if empty or host leaves
+        transaction.delete(docRef);
+      } else {
+        // Update room with remaining participants
+        transaction.update(docRef, {
+          participants: participants,
+          participantNames: participantNames
+        });
+      }
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Left call room successfully"
+    });
+
+  } catch (error) {
+    console.error("❌ Leave call room error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to leave call room"
+    });
+  }
+});
+
+// Get call room participants
+app.get("/call-room-participants/:roomId", verifyToken, async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const userEmail = req.user.email;
+
+    const roomDoc = await db.collection("calls").doc(roomId).get();
+    if (!roomDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        message: "Call room not found"
+      });
+    }
+
+    const roomData = roomDoc.data();
+    res.status(200).json({
+      success: true,
+      participants: roomData.participants || [],
+      participantNames: roomData.participantNames || [],
+      creator: roomData.creator,
+      createdAt: roomData.createdAt
+    });
+
+  } catch (error) {
+    console.error("❌ Get call participants error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to get call participants"
+    });
+  }
+});
+
+// Get all active call rooms
+app.get("/active-call-rooms", verifyToken, async (req, res) => {
+  try {
+    const snapshot = await db.collection("calls")
+      .orderBy("createdAt", "desc")
+      .get();
+
+    const rooms = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+      createdAt: doc.data().createdAt?.toDate()
+    }));
+
+    res.status(200).json({
+      success: true,
+      rooms: rooms
+    });
+
+  } catch (error) {
+    console.error("❌ Get active call rooms error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to get active call rooms"
+    });
+  }
+});
 // 🔥 Firebase Authentication Routes
 app.post("/google-signin", async (req, res) => {
   const { idToken } = req.body;

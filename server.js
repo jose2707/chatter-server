@@ -1672,15 +1672,11 @@ app.post("/upload-reel", verifyToken, async (req, res) => {
       endTrim,
       hapticMarkers,
       caption,
-      createdAt, // This will be an ISO string from the client
       likeCount,
       commentCount,
       viewCount,
       duration
     } = req.body;
-
-    // Convert ISO string back to Firestore timestamp
-    const createdAtTimestamp = admin.firestore.Timestamp.fromDate(new Date(createdAt));
 
     const reelData = {
       videoUrl,
@@ -1690,19 +1686,18 @@ app.post("/upload-reel", verifyToken, async (req, res) => {
       endTrim,
       hapticMarkers: hapticMarkers || [],
       caption: caption || '',
-      createdAt: createdAtTimestamp, // Use the converted timestamp
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
       likeCount: likeCount || 0,
       commentCount: commentCount || 0,
       viewCount: viewCount || 0,
       duration: duration || 0,
     };
 
-    await _firestore.collection('reels').add(reelData);
+    await db.collection('reels').add(reelData);
 
     res.status(201).json({
       success: true,
-      message: "Reel uploaded successfully",
-      reelId: ref.id
+      message: "Reel uploaded successfully"
     });
 
   } catch (error) {

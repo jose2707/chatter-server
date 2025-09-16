@@ -1651,58 +1651,48 @@ app.post("/toggle-pin-chat", verifyToken, async (req, res) => {
   }
 });
 // Add after your existing endpoints
-app.post("/upload-reel", verifyToken, upload.single("video"), async (req, res) => {
+// In your server.js upload-reel endpoint
+app.post("/upload-reel", verifyToken, async (req, res) => {
   try {
-    const userEmail = req.user.email;
     const {
+      videoUrl,
+      uploaderId,
+      uploaderUsername,
       startTrim,
       endTrim,
       hapticMarkers,
-      caption
+      caption,
+      createdAt, // This will be an ISO string from the client
+      likeCount,
+      commentCount,
+      viewCount,
+      duration
     } = req.body;
 
-    if (!req.file) {
-      return res.status(400).json({ success: false, message: "No video file uploaded" });
-    }
+    // Convert ISO string back to Firestore timestamp
+    const createdAtTimestamp = admin.firestore.Timestamp.fromDate(new Date(createdAt));
 
-    // Get user info
-    const userSnapshot = await db.collection("users")
-      .where("email", "==", userEmail)
-      .get();
-
-    if (userSnapshot.empty) {
-      return res.status(404).json({ success: false, message: "User not found" });
-    }
-
-    const userData = userSnapshot.docs[0].data();
-    const username = userData.username || userEmail;
-
-    // Generate video URL
-    const videoUrl = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
-
-    // Save to Firestore
     const reelData = {
       videoUrl,
-      uploaderId: userEmail,
-      uploaderUsername: username,
-      startTrim: parseInt(startTrim) || 0,
-      endTrim: parseInt(endTrim) || 0,
-      hapticMarkers: hapticMarkers ? JSON.parse(hapticMarkers) : [],
-      caption: caption || "",
-      createdAt: FieldValue.serverTimestamp(),
-      likeCount: 0,
-      commentCount: 0,
-      viewCount: 0,
-      duration: 0 // You might want to calculate this from the video
+      uploaderId,
+      uploaderUsername,
+      startTrim,
+      endTrim,
+      hapticMarkers: hapticMarkers || [],
+      caption: caption || '',
+      createdAt: createdAtTimestamp, // Use the converted timestamp
+      likeCount: likeCount || 0,
+      commentCount: commentCount || 0,
+      viewCount: viewCount || 0,
+      duration: duration || 0,
     };
 
-    const reelRef = await db.collection("reels").add(reelData);
+    await _firestore.collection('reels').add(reelData);
 
     res.status(201).json({
       success: true,
       message: "Reel uploaded successfully",
-      reelId: reelRef.id,
-      videoUrl
+      reelId: ref.id
     });
 
   } catch (error) {

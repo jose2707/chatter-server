@@ -1,3 +1,4 @@
+
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -1649,7 +1650,298 @@ app.post("/toggle-pin-chat", verifyToken, async (req, res) => {
     res.status(500).json({ success: false, message: "Failed to toggle pin" });
   }
 });
+// Add after your existing endpoints
+app.post("/upload-reel", verifyToken, upload.single("video"), async (req, res) => {
+  try {
+    const userEmail = req.user.email;
+    const {
+      startTrim,
+      endTrim,
+      hapticMarkers,
+      caption
+    } = req.body;
 
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "No video file uploaded" });
+    }
+
+    // Get user info
+    const userSnapshot = await db.collection("users")
+      .where("email", "==", userEmail)
+      .get();
+
+    if (userSnapshot.empty) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    const userData = userSnapshot.docs[0].data();
+    const username = userData.username || userEmail;
+
+    // Generate video URL
+    const videoUrl = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
+
+    // Save to Firestore
+    const reelData = {
+      videoUrl,
+      uploaderId: userEmail,
+      uploaderUsername: username,
+      startTrim: parseInt(startTrim) || 0,
+      endTrim: parseInt(endTrim) || 0,
+      hapticMarkers: hapticMarkers ? JSON.parse(hapticMarkers) : [],
+      caption: caption || "",
+      createdAt: FieldValue.serverTimestamp(),
+      likeCount: 0,
+      commentCount: 0,
+      viewCount: 0,
+      duration: 0 // You might want to calculate this from the video
+    };
+
+    const reelRef = await db.collection("reels").add(reelData);
+
+    res.status(201).json({
+      success: true,
+      message: "Reel uploaded successfully",
+      reelId: reelRef.id,
+      videoUrl
+    });
+
+  } catch (error) {
+    console.error("❌ Reel upload error:", error);
+    res.status(500).json({ success: false, message: "Failed to upload reel" });
+  }
+});
+app.get("/reels", verifyToken, async (req, res) => {
+  try {
+    const { limit = 20, lastReelId } = req.query;
+    const userEmail = req.user.email;
+
+    let query = db.collection("reels")
+      .orderBy("createdAt", "desc")
+      .limit(parseInt(limit));
+
+    // For pagination
+    if (lastReelId) {
+      const lastDoc = await db.collection("reels").doc(lastReelId).get();
+      if (lastDoc.exists) {
+        query = query.startAfter(lastDoc);
+      }
+    }
+
+    const snapshot = await query.get();
+    const reels = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+      createdAt: doc.data().createdAt?.toDate()
+    }));
+
+    res.status(200).json({
+      success: true,
+      reels,
+      hasMore: reels.length === parseInt(limit)
+    });
+
+  } catch (error) {
+    console.error("❌ Get reels error:", error);
+    res.status(500).json({ success: false, message: "Failed to fetch reels" });
+  }
+});
+app.get("/user-reels/:userId", verifyToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { limit = 20, lastReelId } = req.query;
+
+    let query = db.collection("reels")
+      .where("uploaderId", "==", userId)
+      .orderBy("createdAt", "desc")
+      .limit(parseInt(limit));
+
+    if (lastReelId) {
+      const lastDoc = await db.collection("reels").doc(lastReelId).get();
+      if (lastDoc.exists) {
+        query = query.startAfter(lastDoc);
+      }
+    }
+
+    const snapshot = await query.get();
+    const reels = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+      createdAt: doc.data().createdAt?.toDate()
+    }));
+
+    res.status(200).json({
+      success: true,
+      reels,
+      hasMore: reels.length === parseInt(limit)
+    });
+
+  } catch (error) {
+    console.error("❌ Get user reels error:", error);
+    res.status(500).json({ success: false, message: "Failed to fetch user reels" });
+  }
+});
+// Like/Unlike reel
+app.post("/reel/:reelId/like", verifyToken, async (req, res) => {
+  try {
+    const { reelId } = req.params;
+    const userEmail = req.user.email;
+
+    const reelRef = db.collection("reels").doc(reelId);
+    const reelDoc = await reelRef.get();
+
+    if (!reelDoc.exists) {
+      return res.status(404).json({ success: false, message: "Reel not found" });
+    }
+
+    const likes = reelDoc.data().likes || [];
+    const hasLiked = likes.includes(userEmail);
+
+    if (hasLiked) {
+      // Unlike
+      await reelRef.update({
+        likes: FieldValue.arrayRemove(userEmail),
+        likeCount: FieldValue.increment(-1)
+      });
+    } else {
+      // Like
+      await reelRef.update({
+        likes: FieldValue.arrayUnion(userEmail),
+        likeCount: FieldValue.increment(1)
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      liked: !hasLiked,
+      likeCount: hasLiked ? reelDoc.data().likeCount - 1 : reelDoc.data().likeCount + 1
+    });
+
+  } catch (error) {
+    console.error("❌ Like reel error:", error);
+    res.status(500).json({ success: false, message: "Failed to like reel" });
+  }
+});
+
+// Add comment to reel
+app.post("/reel/:reelId/comment", verifyToken, async (req, res) => {
+  try {
+    const { reelId } = req.params;
+    const { text } = req.body;
+    const userEmail = req.user.email;
+
+    if (!text || text.trim().length === 0) {
+      return res.status(400).json({ success: false, message: "Comment text is required" });
+    }
+
+    const reelRef = db.collection("reels").doc(reelId);
+    const reelDoc = await reelRef.get();
+
+    if (!reelDoc.exists) {
+      return res.status(404).json({ success: false, message: "Reel not found" });
+    }
+
+    // Get user info
+    const userSnapshot = await db.collection("users")
+      .where("email", "==", userEmail)
+      .get();
+
+    const userData = userSnapshot.docs[0].data();
+    const username = userData.username || userEmail;
+    const profilePic = userData.profilePic || "";
+
+    // Add comment
+    const commentData = {
+      userId: userEmail,
+      username,
+      profilePic,
+      text: text.trim(),
+      createdAt: FieldValue.serverTimestamp()
+    };
+
+    const commentRef = await reelRef.collection("comments").add(commentData);
+
+    // Update comment count
+    await reelRef.update({
+      commentCount: FieldValue.increment(1)
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Comment added",
+      commentId: commentRef.id,
+      comment: {
+        ...commentData,
+        id: commentRef.id,
+        createdAt: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Add comment error:", error);
+    res.status(500).json({ success: false, message: "Failed to add comment" });
+  }
+});
+
+// Get reel comments
+app.get("/reel/:reelId/comments", verifyToken, async (req, res) => {
+  try {
+    const { reelId } = req.params;
+    const { limit = 20, lastCommentId } = req.query;
+
+    let query = db.collection("reels").doc(reelId)
+      .collection("comments")
+      .orderBy("createdAt", "desc")
+      .limit(parseInt(limit));
+
+    if (lastCommentId) {
+      const lastDoc = await db.collection("reels").doc(reelId)
+        .collection("comments").doc(lastCommentId).get();
+      if (lastDoc.exists) {
+        query = query.startAfter(lastDoc);
+      }
+    }
+
+    const snapshot = await query.get();
+    const comments = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+      createdAt: doc.data().createdAt?.toDate()
+    }));
+
+    res.status(200).json({
+      success: true,
+      comments,
+      hasMore: comments.length === parseInt(limit)
+    });
+
+  } catch (error) {
+    console.error("❌ Get comments error:", error);
+    res.status(500).json({ success: false, message: "Failed to fetch comments" });
+  }
+});
+const path = require("path");
+
+// Update your multer configuration
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, "public/uploads/");
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, file.fieldname + "-" + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+app.use('/uploads', express.static('public/uploads', {
+  setHeaders: (res, path) => {
+    if (path.endsWith('.mp4') || path.endsWith('.mov') ||
+        path.endsWith('.avi') || path.endsWith('.webm')) {
+      res.setHeader('Content-Type', 'video/mp4');
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+  }
+}));
 app.get("/group-messages/:groupId", verifyToken, async (req, res) => {
   try {
     const groupId = req.params.groupId;

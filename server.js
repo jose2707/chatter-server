@@ -908,24 +908,34 @@ app.post("/google-signin", async (req, res) => {
   }
 });
 // Middleware to verify JWT token on HTTP routes
+// Update your verifyToken middleware to handle Firebase tokens
 function verifyToken(req, res, next) {
   const authHeader = req.header("Authorization");
+
   if (!authHeader) {
     return res.status(401).json({ success: false, message: "❌ No token provided" });
   }
 
   const token = authHeader.split(" ")[1];
+
   if (!token) {
     return res.status(401).json({ success: false, message: "❌ No token provided" });
   }
 
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = decoded;
-    next();
-  } catch (err) {
-    return res.status(401).json({ success: false, message: "❌ Invalid token" });
-  }
+  // Use Firebase Admin to verify the token
+  admin.auth().verifyIdToken(token)
+    .then((decodedToken) => {
+      req.user = decodedToken;
+      next();
+    })
+    .catch((error) => {
+      console.error("❌ Token verification failed:", error.message);
+      return res.status(401).json({
+        success: false,
+        message: "❌ Invalid token",
+        error: error.message
+      });
+    });
 }
 // Add these to your Express server setup
 app.use('/assets/audio', express.static('public/assets/audio', {
